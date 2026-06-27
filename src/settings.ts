@@ -45,7 +45,7 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Settings" });
+    new Setting(containerEl).setName("License and export").setHeading();
 
     new Setting(containerEl)
       .setName("License key")
