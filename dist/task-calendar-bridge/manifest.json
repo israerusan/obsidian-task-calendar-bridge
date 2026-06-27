@@ -3,7 +3,7 @@
   "name": "Task Calendar Bridge",
   "version": "1.0.0",
   "minAppVersion": "1.5.0",
-  "description": "Export Obsidian tasks with due dates to calendar-friendly ICS files. Pro unlocks full-vault auto export, reminders, durations, and advanced filters.",
+  "description": "Export dated Markdown tasks to calendar-friendly ICS files. Pro unlocks full-vault auto export, reminders, durations, and advanced filters.",
   "author": "iavil",
   "authorUrl": "https://github.com/israerusan",
   "fundingUrl": "https://buymeacoffee.com/taskcalendarbridge",
