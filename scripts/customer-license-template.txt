@@ -1,0 +1,28 @@
+Subject: Your Task Calendar Bridge Pro license
+
+Hi {{customer_name}},
+
+Thank you for purchasing Task Calendar Bridge Pro.
+
+Your license key:
+
+{{license_key}}
+
+How to activate:
+1. Open Obsidian.
+2. Go to Settings -> Task Calendar Bridge.
+3. Paste the license key into "License key".
+4. Pro should unlock immediately. Verification is offline, so no account is required.
+
+Pro unlocks:
+- Full-vault ICS export with no free-tier cap
+- Auto-export when notes change
+- Completed-task export option
+- Reminder alarms
+- Timed events and durations
+- Include/exclude folder filters
+
+If you need help, reply to this email with your Obsidian version and a short description of the issue.
+
+Thanks,
+iavil

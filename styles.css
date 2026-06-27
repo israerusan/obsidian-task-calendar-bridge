@@ -1,0 +1,10 @@
+.task-calendar-bridge-status {
+  padding: 8px 0;
+  color: var(--text-muted);
+}
+
+.task-calendar-bridge-locked .setting-item-description::after {
+  content: " Pro";
+  color: var(--text-accent);
+  font-weight: 600;
+}

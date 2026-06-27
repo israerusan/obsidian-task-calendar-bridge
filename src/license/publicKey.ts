@@ -1,0 +1,1 @@
+export const LICENSE_PUBLIC_KEY = "hnxFBRD3F8RNMhAZZr-xSEl7V47CeQ5jbQBIAnktOGU";

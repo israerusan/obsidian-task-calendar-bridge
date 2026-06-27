@@ -1,0 +1,24 @@
+Task Calendar Bridge - payment setup options
+
+Suggested product positioning:
+- Free plugin with optional paid Pro unlock.
+- Pro price: $9 one-time.
+- Directory label: Optional payments.
+
+Lowest-friction launch option:
+1. Create a Buy Me a Coffee product named "Task Calendar Bridge Pro".
+2. Set price to $9.
+3. On purchase, manually generate a license key:
+   npm run license:generate -- customer@email.com
+4. Email the key using scripts/customer-license-template.txt.
+
+Alternative stores:
+- Gumroad: cleaner digital-product delivery, can include a license-key email manually.
+- Lemon Squeezy: better for tax/VAT handling if volume grows.
+- Stripe Payment Link: simple checkout, but you need your own delivery workflow.
+
+Important:
+- The plugin verifies licenses offline.
+- There is no subscription server.
+- Do not publish scripts/.license-private.key.
+- Back up scripts/.license-private.key; without it, you cannot generate compatible Pro keys.
