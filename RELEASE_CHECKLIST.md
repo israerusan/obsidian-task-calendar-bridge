@@ -5,7 +5,7 @@
 - [ ] Run `npm test`
 - [ ] Run `npm run build`
 - [ ] Confirm `main.js`, `manifest.json`, and `styles.css` exist
-- [ ] Rebuild `dist/task-calendar-bridge-1.0.0.zip`
+- [ ] Rebuild `dist/task-calendar-bridge-1.0.1.zip`
 - [ ] Install into a clean test vault
 - [ ] Run `Create sample task note`
 - [ ] Run current-note export
