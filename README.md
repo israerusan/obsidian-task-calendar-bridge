@@ -73,7 +73,7 @@ npm run build
 Release zip output:
 
 ```text
-dist/task-calendar-bridge-0.1.0.zip
+dist/task-calendar-bridge-1.0.0.zip
 ```
 
 ## Pro license generation

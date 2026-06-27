@@ -1,6 +1,6 @@
 {
   "name": "obsidian-task-calendar-bridge",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Bridge Obsidian tasks with calendar apps through ICS export and Pro automation.",
   "main": "main.js",
   "scripts": {
