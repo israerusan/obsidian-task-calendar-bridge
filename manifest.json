@@ -1,7 +1,7 @@
 {
   "id": "task-calendar-bridge",
   "name": "Task Calendar Bridge",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.5.0",
   "description": "Export dated Markdown tasks to calendar-friendly ICS files. Pro unlocks full-vault auto export, reminders, durations, and advanced filters.",
   "author": "iavil",

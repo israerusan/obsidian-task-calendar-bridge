@@ -89,7 +89,37 @@ export function generateIcsCalendar(tasks: CalendarTask[], options: IcsOptions):
   }
 
   lines.push("END:VCALENDAR");
-  return `${lines.join("\r\n")}\r\n`;
+  // Fold every content line to the RFC 5545 §3.1 75-octet limit before joining.
+  return `${lines.map(foldIcsLine).join("\r\n")}\r\n`;
+}
+
+/**
+ * Folds a single content line so no line exceeds 75 octets (RFC 5545 §3.1).
+ * Continuation lines are prefixed with a single space, which counts toward the
+ * limit. Folds on UTF-8 byte boundaries by iterating code points, so a
+ * multi-byte character is never split.
+ */
+function foldIcsLine(line: string): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(line).length <= 75) return line;
+
+  const out: string[] = [];
+  let current = "";
+  let bytes = 0;
+  for (const ch of line) {
+    const chBytes = encoder.encode(ch).length;
+    if (bytes + chBytes > 75) {
+      out.push(current);
+      // Continuation lines start with a space that counts as one octet.
+      current = ` ${ch}`;
+      bytes = 1 + chBytes;
+    } else {
+      current += ch;
+      bytes += chBytes;
+    }
+  }
+  out.push(current);
+  return out.join("\r\n");
 }
 
 export function createStableUid(task: CalendarTask): string {
