@@ -21,7 +21,7 @@ export const DEFAULT_SETTINGS: TaskCalendarBridgeSettings = {
   licenseKey: "",
   isPro: false,
   licenseEmail: "",
-  purchaseUrl: "https://buymeacoffee.com/taskcalendarbridge",
+  purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/560210",
   calendarName: "Obsidian Tasks",
   outputPath: ".task-calendar-bridge/tasks.ics",
   includeCompleted: false,
