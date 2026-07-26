@@ -63,7 +63,11 @@ The plugin generates a local ICS file. Most calendar apps treat ICS import as a 
 
 The in-plugin guide covers Google Calendar, Apple Calendar, Outlook, and TickTick.
 
-## Manual install
+## Install
+
+**Community plugins (recommended):** open **Settings → Community plugins**, search **Task Calendar Bridge**, and install it — one click, auto-updates.
+
+### Manual install
 
 1. Download or build the release package.
 2. Copy these files into `.obsidian/plugins/task-calendar-bridge/` inside your vault:
