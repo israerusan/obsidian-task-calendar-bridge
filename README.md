@@ -1,8 +1,13 @@
 # Task Calendar Bridge
 
-Bridge Obsidian tasks into calendar apps with an offline, privacy-friendly `.ics` export.
+> See your Obsidian tasks in Google Calendar, Apple Calendar, Outlook, or TickTick — without sending a single note to the cloud.
 
-This plugin is built as a freemium product: useful free current-note export plus a small one-time Pro unlock for vault-wide automation.
+Plan your work in Markdown, then export your dated tasks as a standards-based `.ics` calendar file that any calendar app can import. It runs entirely offline: no account, no server, no third-party sync. The current-note export is free forever; a one-time Pro unlock adds full-vault automation.
+
+<!-- SCREENSHOT SLOT — drop a real capture here to lift conversions.
+     ![Obsidian tasks exported and showing up as events in Google Calendar](docs/assets/hero.png)
+     Suggested shot: split view — a Markdown note with dated tasks on the left, the same items as calendar events on the right. Save as docs/assets/hero.png -->
+
 
 ## Why it exists
 
@@ -18,7 +23,7 @@ Obsidian users often plan work in Markdown but still need calendar visibility in
 - Sample note generator with supported syntax
 - Offline-first; no account or server
 
-## Pro features ($9 one-time suggested)
+## Pro ($9 one-time)
 
 - Full-vault ICS export with no free-tier cap
 - Auto-export when Markdown notes change
@@ -27,6 +32,14 @@ Obsidian users often plan work in Markdown but still need calendar visibility in
 - Timed events via `[start:: 14:15]` and `[duration:: 1h]`
 - Include/exclude folder filters
 - Offline Ed25519 license verification; no subscription server needed
+
+Purchase: [Buy Me a Coffee — Task Calendar Bridge Pro](https://buymeacoffee.com/vaultspotlight/e/560210). License keys are verified **offline** (Ed25519) — no account, server, or subscription.
+
+### Activate Pro
+
+1. Purchase on [Buy Me a Coffee](https://buymeacoffee.com/vaultspotlight/e/560210).
+2. Your license key is emailed to you **automatically, within seconds** — delivery is fully automated, no waiting.
+3. Obsidian → **Settings → Task Calendar Bridge → License key** → paste the key. Pro unlocks immediately (offline verification).
 
 ## Supported task syntax
 
@@ -85,9 +98,3 @@ npm run license:generate -- customer@email.com
 ```
 
 The generated key can be pasted into Settings -> Task Calendar Bridge -> License key.
-
-## Suggested sales copy
-
-Task Calendar Bridge turns dated Obsidian tasks into calendar events without sending your notes to a server. Keep planning in Markdown, then export clean ICS files for Google Calendar, Apple Calendar, Outlook, TickTick, and more.
-
-Suggested price: $9 one-time for Pro.
