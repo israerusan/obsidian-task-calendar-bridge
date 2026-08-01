@@ -1,6 +1,6 @@
 # Task Calendar Bridge
 
-Turn dated Markdown tasks into a real calendar feed without leaving Obsidian.
+Turn dated Markdown tasks into a calendar that stays useful outside Obsidian.
 
 <!-- HERO SLOT — replace this comment with a real capture before the next marketing push.
      Suggested asset: split view with a dated Markdown task note on the left and the same items visible as events in Google Calendar / Apple Calendar on the right.
@@ -9,10 +9,10 @@ Turn dated Markdown tasks into a real calendar feed without leaving Obsidian.
 
 **Works offline** · **Pay once** · **Unlimited updates** · **No account**
 
-Task Calendar Bridge turns the dated tasks you already plan in Markdown into a standards-based `.ics` calendar feed for Google Calendar, Apple Calendar, Outlook, TickTick, and anything else that speaks ICS. No server, no account, no third-party sync — just your notes becoming calendar events.
+Task Calendar Bridge turns the dated tasks you already track in Markdown into a standards-based `.ics` feed for Google Calendar, Apple Calendar, Outlook, TickTick, and anything else that speaks ICS. No server, no account, no third-party sync — just your tasks showing up where you actually plan time.
 
 - **Free:** export every dated task from the current note, plus a capped whole-vault feed, with timed events, multi-day events, tags as categories, stable event identity, and built-in import guidance.
-- **Pro — $9 one-time:** the serious calendar workflow — uncapped vault export, auto-export when notes change, repeating events, reminder alarms, publish-outside-the-vault, completed-task export, and folder filters. No subscription, no account, **unlimited future updates**.
+- **Pro — $9 one-time:** the live calendar workflow — uncapped vault export, auto-export when notes change, repeating events, reminder alarms, publish-outside-the-vault, completed-task export, and folder filters. No subscription, no account, **unlimited future updates**.
 - **Buy once, unlock fast:** [Buy Task Calendar Bridge Pro](https://buymeacoffee.com/vaultspotlight/e/560210) — your key arrives automatically within seconds and activates offline.
 
 ## Why it exists
@@ -65,6 +65,7 @@ Both the Obsidian Tasks emoji vocabulary and Dataview-style inline fields work, 
 - Include completed and cancelled tasks
 - Include/exclude folder filters
 - Offline Ed25519 license verification; no subscription server needed
+- One purchase, no expiry, unlimited future updates
 
 ### Activate Pro
 
