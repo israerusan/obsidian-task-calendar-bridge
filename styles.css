@@ -3,8 +3,20 @@
   color: var(--text-muted);
 }
 
+.task-calendar-bridge-error {
+  color: var(--text-error);
+}
+
 .task-calendar-bridge-locked .setting-item-description::after {
   content: " Pro";
   color: var(--text-accent);
   font-weight: 600;
+}
+
+.task-calendar-bridge-report {
+  color: var(--text-muted);
+}
+
+.task-calendar-bridge-report code {
+  font-size: var(--font-smaller);
 }

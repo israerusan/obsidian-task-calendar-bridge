@@ -3,6 +3,186 @@
 All notable changes to Task Calendar Bridge are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-08-01
+
+The correctness release. Several defects meant an ordinary day of editing could
+corrupt your calendar, so those are fixed for **every** user — free and Pro.
+Nothing that was free has been taken away.
+
+### Fixed — data safety
+
+- **Editing a note no longer duplicates calendar events.** Event UIDs used to
+  include the line number, the note path, the title, and the due date, so
+  inserting a line above a task, renaming a note, fixing a typo, or — worst of
+  all — **rescheduling a task** gave it a brand-new identity. Re-importing then
+  added a second event and orphaned the first. Identity now comes from an
+  explicit `[id:: …]`, an Obsidian block id (`^abc123`), or a hash that excludes
+  the line number and the date, so edits update the event in place. The hash is
+  also 64-bit now; the old 32-bit one could collide in a large vault.
+- **A typo in the output path can no longer destroy a note.** The path is
+  validated (it must end in `.ics`, stay inside the vault, and contain no
+  illegal characters) and the plugin refuses to overwrite any file it did not
+  create.
+- **Exporting one note no longer wipes your whole-vault calendar.** The two
+  scopes write to two different files. Your existing output path is kept as the
+  vault calendar, so an already-imported feed does not move.
+- **Failed exports are no longer silent.** Every export is wrapped in error
+  handling, failures raise a notice, and the last result is shown in settings
+  and in the status bar.
+- **Auto-export no longer keeps running after the plugin is disabled**, and no
+  longer re-reads the entire vault on every keystroke pause — parsed notes are
+  cached and only changed files are re-read. An export already in flight when
+  the plugin is disabled now stops instead of writing files and overwriting the
+  settings of a freshly loaded instance.
+- **A mistyped license key can no longer destroy a working one.** The key is
+  verified before it is stored, so an unverifiable paste leaves your active
+  license untouched and just shows the error.
+- **A failed publish no longer reports the whole export as failed** when the
+  calendar file was written correctly.
+- The two output paths cannot be set to the same file, compared the way the
+  filesystem compares them rather than case-sensitively.
+- **Removing a license is now a deliberate act.** Emptying the field and
+  clicking away used to erase the plugin's only copy of your key.
+- A publish failure is recorded and shown in settings, so a Pro user whose
+  publish target breaks finds out instead of quietly serving a stale calendar.
+- The export report survives a restart — the moment a user notices tasks missing
+  from their calendar is exactly when it used to be gone.
+- A repeat rule that does nothing because the setting is off now says so in the
+  report, instead of the report claiming nothing was skipped.
+- The export notice separates tasks that did not reach the calendar from tasks
+  that exported with one field ignored, and no longer shows a stale report from
+  the previous successful run after a failure.
+
+### Fixed — calendar correctness
+
+- **Every "Source" link in an exported event was dead.** The old
+  `obsidian://open?path=…#L5` form is not a valid Obsidian URI. Events now carry
+  a working `obsidian://open?vault=…&file=…` link in both `DESCRIPTION` and the
+  `URL` property.
+- **`STATUS:COMPLETED` is not legal in a `VEVENT`** (it is a `VTODO` value), so
+  the Pro "include completed tasks" feature was producing invalid files.
+  Completed tasks now use `STATUS:CONFIRMED`, an `X-OBSIDIAN-TASK-COMPLETED`
+  flag, a `Completed` category, and a ✔ in the title.
+- **All-day tasks no longer mark your entire day as busy** (`TRANSP:TRANSPARENT`).
+- **Alarms on all-day tasks no longer fire at 23:30 the night before.** There is
+  a new "All-day reminder time" setting, defaulting to 09:00.
+- **`METHOD:PUBLISH` removed** — it declares an iTIP scheduling message that
+  requires an `ORGANIZER` this calendar has no business inventing.
+- **A task with both a start time and an end date no longer loses the end date.**
+- Invalid dates and times never reach the file. `2026-99-99` and `29:75` used to
+  pass straight through and could make a calendar app refuse the entire import.
+  A bad *placement* date skips the task; a bad *decoration* drops that field and
+  the task still exports. Either way it is listed in the report.
+
+### Fixed — parsing
+
+- **Writing the same task on successive days now produces one event per day.**
+  The same title on different dates collapsed onto a single identity, so all but
+  the first `Standup` silently vanished from the calendar.
+- **A malformed decoration no longer deletes the whole task.** An unreadable
+  start time, end date, or duration is dropped and reported; the task still
+  exports on its valid date. `due:: 2026-08-02 #work` — a bare field followed by
+  a tag, a block id, or ordinary prose — exports again too.
+- Tasks written **inside code fences are no longer exported** as real events.
+- **Code fences are matched properly**: a ``` line no longer closes a ````
+  block, a `~~~` line no longer closes a ``` block, and an unterminated fence no
+  longer hides every task below it.
+- **A repeat rule that disagrees with the task's date is reported instead of
+  exported** — `every month on the 15th` on a task dated the 3rd means different
+  things in different calendar apps.
+- A single pathological line no longer freezes the editor during export: task
+  lines over 2 000 characters are reported and skipped.
+- Durations over a year, `1,5h` (European decimal), and two-digit years are all
+  handled instead of producing corrupt output.
+- **Completing one of several same-titled tasks no longer rewrites the identity
+  of the others**, which would have orphaned their calendar events.
+- A code fence inside a callout stays inside the callout; it can no longer be
+  closed by an unrelated fence elsewhere in the note.
+- `every month on the last` is now checked against the task's date like every
+  other repeat rule.
+- Dataview links with a folder or an alias — `[due:: [[Daily/2026-08-02|Aug 2]]]`
+  — are understood.
+- **A trailing tag, block id, or parenthetical no longer eats the field it
+  follows.** `duration:: 45m (about an hour)` and `🔁 every week on Monday #work`
+  both work; the second used to quietly downgrade a Pro repeating event to a
+  single one.
+- A field value that collides with a JavaScript object member — `[priority::
+  constructor]`, `[repeat:: every constructor]` — can no longer write a function
+  body into the calendar file and make it unparseable.
+- Control characters pasted into a task title are stripped instead of making the
+  whole file unimportable.
+- Tasks in **callouts, blockquotes, and numbered lists are now exported** — they
+  used to be invisible.
+- **Custom checkbox states are recognised**: `[/]` in progress, `[-]` cancelled
+  (exported as `STATUS:CANCELLED` with Pro), and unknown states treated as open.
+- The tag stripper no longer eats **issue numbers (`#123`)** or headings inside
+  a wikilink.
+- Bare `duration:: 1 hour` no longer truncates at the first space and becomes a
+  one-minute event. `1h30m`, `45`, `1.5h`, and `2 days` all work; anything not
+  understood is reported rather than guessed at.
+- `9:30` and `09:30:00` are accepted, not silently downgraded to an all-day event.
+- Dataview date links (`[due:: [[2026-08-02]]]`) are understood.
+- Wikilinks, markdown links, bold, and code spans render as readable text in the
+  event title.
+
+### Added — free
+
+- **Obsidian Tasks syntax support**: `📅 📆 🗓` due, `⏳` scheduled, `🛫` start,
+  `✅` done, `➕` created, `🆔` id, and the `🔺 ⏫ 🔼 🔽 ⏬` priority emoji. A
+  scheduled date places the event; the due date is carried as the deadline.
+  None of these leak into the calendar title any more.
+- **Tags become calendar categories**, so you can colour and filter by them.
+- **Priority becomes calendar priority.**
+- **Time zone handling.** Keep local wall time (the previous behaviour), or pin
+  events to a fixed IANA zone so they stay correct when you travel. DST is
+  handled without shipping timezone rules that go stale: a wall time inside a
+  spring-forward gap shifts forward (in every zone, east or west of UTC), an
+  ambiguous fall-back time takes the earlier of its two instants, and repeating
+  events stay on wall-clock time so they do not drift an hour when the clocks
+  change. Half-hour and 45-minute offsets are handled.
+- **12-hour times.** `[start:: 7:00 pm]` and `7pm` work. Previously the bare
+  form was cut at the space and a 7 PM dinner was exported at 7 AM.
+- **An export report** — "Show last export report" lists every skipped task and
+  why: no date, invalid date, an untranslatable repeat rule, or the free cap.
+  Undated tasks used to vanish with no explanation at all.
+- **The free cap now exports the next 25 _upcoming_ tasks**, sorted by date,
+  instead of whichever 25 the vault happened to list first. The cap is no longer
+  an editable number in `data.json`.
+- Timed events, durations, and multi-day events are documented as free, which is
+  what the code has always done.
+- A status bar item showing the last export.
+
+### Added — Pro
+
+- **Repeating events.** A `🔁 every 2 weeks on Monday` rule becomes a real
+  recurring calendar event (`RRULE`) instead of a single one-off. Rules that
+  cannot be translated are reported, never guessed at.
+- **Publish outside the vault** (desktop). Write a copy of the calendar into a
+  folder your cloud drive syncs, then **subscribe** to its URL in your calendar
+  app instead of re-importing by hand. With auto-export on, the calendar keeps
+  itself current — the live-calendar workflow the old README could only gesture at.
+- Cancelled tasks export as cancelled events.
+- Folder filters now match on path boundaries: `Work` no longer also selects
+  `Workshop`.
+
+### Changed
+
+- Default output paths are `Calendar/tasks.ics` and `Calendar/current-note.ics`.
+  The old `.task-calendar-bridge/` folder was hidden from the file explorer and
+  skipped by sync. **Existing installs keep their configured path** for the
+  whole-vault calendar, and the current-note file is placed beside it — the
+  ribbon icon writes there, so pointing it at a brand-new default would have
+  left an already-subscribed feed frozen. A one-time notice explains the change.
+- The license key is verified when you press **Activate**, Enter, or leave the
+  field — not on every keystroke, which used to rebuild the settings tab and
+  steal your cursor mid-paste. Verification errors are now shown.
+- Locked Pro settings have a working **Get Pro** button instead of being dead rows.
+- Repeating events and reminder alarms are **on by default once Pro is active**.
+  Shipping them off made features the README sells look broken.
+- Completed and cancelled tasks are no longer counted as "skipped" in the export
+  notice; they are excluded on purpose, and counting them made a normal export
+  read like a failure.
+
 ## [1.0.3] - 2026-07-05
 
 ### Internal
