@@ -1,22 +1,86 @@
 # Task Calendar Bridge
 
-Turn dated Markdown tasks into a calendar that stays useful outside Obsidian.
+Turn dated Markdown tasks into a calendar you can actually use outside Obsidian.
 
 ![Task Calendar Bridge hero: tasks written in Obsidian rendered as real calendar events](docs/assets/task-calendar-bridge-hero-v2.png)
 
 > Hero image uses a live Obsidian note capture plus the plugin's real exported `.ics` output from the same demo state.
 
-**Works offline** · **Pay once** · **Unlimited updates** · **No account**
+**Works offline** · **One-time payment** · **Unlimited future updates** · **No account**
 
-Task Calendar Bridge turns the dated tasks you already track in Markdown into a standards-based `.ics` feed for Google Calendar, Apple Calendar, Outlook, TickTick, and anything else that speaks ICS. No server, no account, no third-party sync — just your tasks showing up where you actually plan time.
+Task Calendar Bridge turns the dated tasks you already track in Markdown into a standards-based `.ics` calendar for Google Calendar, Apple Calendar, Outlook, TickTick, and anything else that speaks ICS. Write the task once in Obsidian, export it, and see it where you actually plan time.
 
-- **Free:** export every dated task from the current note, plus a capped whole-vault feed, with timed events, multi-day events, tags as categories, stable event identity, and built-in import guidance.
-- **Pro — $9 one-time:** the live calendar workflow — uncapped vault export, auto-export when notes change, repeating events, reminder alarms, publish-outside-the-vault, completed-task export, and folder filters. No subscription, no account, **unlimited future updates**.
-- **Buy once, unlock fast:** [Buy Task Calendar Bridge Pro](https://buymeacoffee.com/vaultspotlight/e/560210) — your key arrives automatically within seconds and activates offline.
+Best fit if you:
+- plan work in Markdown but still live out of a calendar
+- want a local/offline workflow instead of another sync service or account
+- need task dates to show up in Google Calendar, Apple Calendar, Outlook, TickTick, or mobile widgets
 
-## Why it exists
+## Free vs Pro at a glance
 
-Obsidian users often plan work in Markdown but still need calendar visibility in Google Calendar, Apple Calendar, Outlook, TickTick, or mobile widgets. Existing workflows usually require scripts, manual copying, or fragile app-specific integrations. Task Calendar Bridge parses your dated Markdown tasks — in the syntax you already use — and generates a standards-based ICS calendar file.
+| | Free | Pro ($9 one-time) |
+| --- | --- | --- |
+| Current note export | Unlimited | Unlimited |
+| Whole-vault export | Next 25 upcoming tasks | Full vault, no cap |
+| Timed events, durations, multi-day events | Yes | Yes |
+| Obsidian Tasks + Dataview syntax | Yes | Yes |
+| Stable event identity | Yes | Yes |
+| Repeating events | No | Yes |
+| Reminder alarms | No | Yes |
+| Auto-export when notes change | No | Yes |
+| Publish outside the vault for calendar subscription workflows | No | Yes |
+| Completed/cancelled task export | No | Yes |
+| Folder filters | No | Yes |
+
+- **Free:** prove the workflow on a real note, export the current note with no cap, and test a small whole-vault feed.
+- **Pro:** make it practical for daily use — full-vault export, auto-refresh, recurring events, reminders, publish/subscription workflows, and filtering.
+- **Buy once, unlock in seconds:** [Buy Task Calendar Bridge Pro](https://buymeacoffee.com/vaultspotlight/e/560210) — instant checkout, automatic key delivery, offline activation.
+
+## Why Pro is worth paying for
+
+Free proves the bridge works. Pro makes it stop behaving like a manual export toy.
+
+The paid value is not "more settings." It is the difference between:
+
+- exporting one note to test the idea
+- keeping a real calendar workflow alive across your vault without babysitting it
+
+If you live out of your calendar, the practical Pro win is:
+- your full vault exports instead of only the next 25 upcoming tasks
+- the file refreshes itself when notes change
+- repeating tasks become real recurring events
+- reminders survive the jump into calendar apps
+- you can publish the calendar into Dropbox, iCloud Drive, or OneDrive and subscribe once instead of re-importing forever
+
+That is the upgrade story: not "more features," but "this now runs like a real bridge instead of a demo."
+
+### Premium proof to look for
+
+The strongest Pro workflow is:
+1. create or edit a dated task in Obsidian
+2. export or auto-export the `.ics`
+3. subscribe once from your calendar app
+4. watch later edits show up without another manual import
+
+If you only need occasional one-off exports, Free is enough. If you want your Markdown task system and your calendar to stay in sync like adults, Pro is the point.
+
+## Why people use it
+
+Obsidian users often plan work in Markdown but still need calendar visibility in Google Calendar, Apple Calendar, Outlook, TickTick, or mobile widgets. The usual alternatives are ugly: copy tasks by hand, maintain a brittle script, or accept some app-specific workflow that breaks the moment you switch tools.
+
+Task Calendar Bridge keeps the workflow simple:
+1. write dated tasks in normal Markdown
+2. export a standards-based `.ics` calendar file
+3. import it once or subscribe to it from the calendar app you already use
+
+No hosted sync layer. No account. No "please trust our server with your planning system."
+
+## First win in 2 minutes
+
+1. Install the plugin.
+2. Run `Create sample task note` from the command palette.
+3. Run `Export current note calendar`, then import the generated `.ics` file into your calendar.
+
+If that clicks, Pro unlocks the live version of the workflow: full-vault export, auto-export, recurring events, reminders, publish-outside-the-vault, and folder filtering.
 
 ## Task syntax
 
