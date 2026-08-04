@@ -2,10 +2,9 @@
 
 Turn dated Markdown tasks into a calendar that stays useful outside Obsidian.
 
-<!-- HERO SLOT — replace this comment with a real capture before the next marketing push.
-     Suggested asset: split view with a dated Markdown task note on the left and the same items visible as events in Google Calendar / Apple Calendar on the right.
-     Ideal story: task written once in Obsidian -> exported ICS -> visible in calendar app.
-     Suggested path: docs/assets/task-calendar-bridge-hero.png -->
+![Task Calendar Bridge hero: tasks written in Obsidian rendered as real calendar events](docs/assets/task-calendar-bridge-hero-v2.png)
+
+> Hero image uses a live Obsidian note capture plus the plugin's real exported `.ics` output from the same demo state.
 
 **Works offline** · **Pay once** · **Unlimited updates** · **No account**
 
