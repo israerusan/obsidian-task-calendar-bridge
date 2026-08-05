@@ -63,9 +63,13 @@ The strongest Pro workflow is:
 
 If you only need occasional one-off exports, Free is enough. If you want your Markdown task system and your calendar to stay in sync like adults, Pro is the point.
 
+![Task Calendar Bridge Pro motion proof: edit the task in Obsidian, then see the exported calendar proof update](docs/assets/task-calendar-bridge-pro-motion-v1.gif)
+
+> Motion proof from the same demo note before and after an edit: the customer onboarding call moves from `14:00` with a `10m` reminder to `15:30` with a `30m` reminder, while recurring-event and completed-task proof stays visible on the same export surface.
+
 ![Task Calendar Bridge Pro proof: live Obsidian note on the left, real exported calendar output on the right](docs/assets/task-calendar-bridge-pro-proof-v1.png)
 
-> Premium proof from the live Pro demo state: note capture from the Personal vault on the left, and real `current-note.ics` output from the installed Pro-enabled plugin state on the right. This still shows reminder preservation and completed-task export without faking a SaaS sync layer.
+> Static proof from the live Pro demo state: note capture from the Personal vault on the left, and real `current-note.ics` output from the installed Pro-enabled plugin state on the right. This still shows reminder preservation and completed-task export without faking a SaaS sync layer.
 
 ## Why people use it
 
