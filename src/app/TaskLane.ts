@@ -39,6 +39,16 @@ export interface TaskLaneOptions {
   timer: Timer;
   /** False once the plugin is unloaded; nothing may start or continue after that. */
   alive?: () => boolean;
+  /**
+   * Where a failed *scheduled* run goes.
+   *
+   * Nobody is awaiting one, so without this its rejection has no handler at all — the failure
+   * becomes an unhandled promise rejection the user never sees. That matters most for the
+   * settings lane: every text field in the settings tab saves through `schedule()`, and a write
+   * that fails because the vault is in a cloud folder would otherwise revert the setting
+   * silently at the next restart.
+   */
+  onError?: (error: unknown) => void;
 }
 
 export class TaskLane {
@@ -46,17 +56,25 @@ export class TaskLane {
   private readonly run: () => Promise<void>;
   private readonly timer: Timer;
   private readonly alive: () => boolean;
+  private readonly onError: (error: unknown) => void;
 
   /** Kept on a settled branch so one failure cannot poison every later run. */
   private chain: Promise<unknown> = Promise.resolve();
   private handle: unknown = undefined;
   private pending = false;
+  /**
+   * Bumped by `cancel()`. A scheduled run that has been handed to the chain but has not started
+   * carries the epoch it was created under, so cancelling drops it too — otherwise `cancel()`
+   * only meant "stop the timer", and a queued run went ahead anyway.
+   */
+  private epoch = 0;
 
   constructor(options: TaskLaneOptions) {
     this.delayMs = options.delayMs;
     this.run = options.run;
     this.timer = options.timer;
     this.alive = options.alive ?? ((): boolean => true);
+    this.onError = options.onError ?? ((): void => undefined);
   }
 
   /**
@@ -68,39 +86,42 @@ export class TaskLane {
   schedule(): void {
     if (!this.alive()) return;
     if (this.handle !== undefined) this.timer.clear(this.handle);
+    const epoch = this.epoch;
     this.handle = this.timer.set(() => {
       this.handle = undefined;
       if (this.pending) return;
       this.pending = true;
-      void this.enqueue(() => {
+      // Nobody awaits this, so its failure needs somewhere to go or it becomes an unhandled
+      // rejection and the user is told nothing at all.
+      this.enqueue(() => {
         // Released as the run STARTS, not when it ends. An edit made while this run is under
         // way is not reflected in it, and must be able to schedule the next one.
         this.pending = false;
-        return this.alive() ? this.run() : Promise.resolve();
-      });
+        if (epoch !== this.epoch || !this.alive()) return Promise.resolve();
+        return this.run();
+      }).catch((error) => this.onError(error));
     }, this.delayMs);
-  }
-
-  /** Run now, still in order behind anything already queued. */
-  async runNow(): Promise<void> {
-    await this.enqueue(() => (this.alive() ? this.run() : Promise.resolve()));
   }
 
   /** Put an arbitrary task in the same order as the runs. */
   async enqueue(task: () => Promise<void>): Promise<void> {
-    const next = this.chain.then(task, task);
+    const next = this.chain.then(task);
     this.chain = next.catch(() => undefined);
     await next;
   }
 
-  /** Drop anything waiting on the timer. Work already in the chain still finishes. */
+  /**
+   * Drop the scheduled run — whether it is still on the timer or already queued behind other
+   * work. Explicit `enqueue()` calls are untouched: someone is awaiting those.
+   */
   cancel(): void {
     if (this.handle !== undefined) this.timer.clear(this.handle);
     this.handle = undefined;
     this.pending = false;
+    this.epoch++;
   }
 
-  /** Whether a scheduled run is waiting — for tests and diagnostics. */
+  /** Whether a scheduled run is still coming. */
   get isScheduled(): boolean {
     return this.handle !== undefined || this.pending;
   }

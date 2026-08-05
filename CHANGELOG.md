@@ -3,6 +3,43 @@
 All notable changes to Task Calendar Bridge are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-08-05
+
+Two fixes that only became visible once the plugin's internals were pulled apart
+and put under test. Nothing about your calendar's contents changes: the exported
+file is byte-for-byte what 1.2.0 produced, and event identity is untouched.
+
+### Fixed
+
+- **A settings change that fails to save now tells you.** Every text field in the
+  settings tab — the calendar name, both output paths, the time zone, the publish
+  folder — saves a moment after you stop typing. If that write failed, which a
+  vault inside a cloud folder can cause, nothing was reported: no notice, no
+  entry anywhere, and the setting quietly reverted the next time Obsidian
+  started. The failure now says so.
+- **Removing your licence while an automatic export was already queued no longer
+  truncates the calendar.** The check for whether auto-export is allowed happened
+  when the export was scheduled rather than when it ran, so an export queued
+  moments earlier still went ahead — and took the free-tier path, replacing a
+  full calendar with the next 25 tasks. It is now checked at the moment the
+  export actually starts, and a lapsed licence stops it.
+
+### Internal
+
+- The plugin layer had no tests at all: 1,877 lines covering the export
+  pipeline, the file writer, scheduling and settings persistence, none of it
+  reachable by a test because the `obsidian` package ships type definitions with
+  no runtime. That code now lives behind a seam that imports nothing from
+  Obsidian, so the same test setup that has always covered the parser covers it
+  too — and a guard test keeps it that way.
+- The export is a pure function of its inputs, the two write destinations share
+  one implementation instead of two copies of the same rule, and the five
+  separate debouncers, queues and flags that had accumulated around scheduling
+  are one thing.
+- `main.ts` is 595 lines, down from 846, and stopped growing for the first time
+  in three releases.
+- Continuous integration exists, on Node 20 and 22.
+
 ## [1.2.0] - 2026-08-04
 
 The hardening release. Three rounds of adversarial review over 1.1.0 turned up

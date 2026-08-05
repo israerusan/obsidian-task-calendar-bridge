@@ -531,6 +531,77 @@ const settings = (over = {}) => ({
     assert.equal(lane.isScheduled, false);
   }
 
+  // A failed scheduled run must not become an unhandled rejection. Nobody awaits it, so
+  // without a sink the user is told nothing and the setting silently reverts at restart.
+  {
+    const timer = fakeTimer();
+    const seen = [];
+    const lane = new TaskLane({
+      timer: timer.port,
+      delayMs: 10,
+      run: async () => {
+        throw new Error("EBUSY: data.json is locked");
+      },
+      onError: (error) => seen.push(String(error)),
+    });
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    lane.schedule();
+    timer.tick();
+    await settle();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    process.off("unhandledRejection", onUnhandled);
+    assert.equal(unhandled.length, 0, "a failed scheduled run must not surface as an unhandled rejection");
+    assert.equal(seen.length, 1, "it goes to the error sink instead");
+    assert.ok(seen[0].includes("EBUSY"));
+  }
+
+  // cancel() must drop a run that is already queued behind other work, not just one still on
+  // the timer — otherwise "cancel" only meant "stop the countdown".
+  {
+    const timer = fakeTimer();
+    let runs = 0;
+    let release;
+    const blocked = new Promise((resolve) => (release = resolve));
+    const lane = new TaskLane({ timer: timer.port, delayMs: 10, run: async () => void runs++ });
+    void lane.enqueue(() => blocked);
+    lane.schedule();
+    timer.tick();
+    await settle();
+    lane.cancel();
+    release();
+    await settle();
+    await settle();
+    assert.equal(runs, 0, "a queued-but-unstarted scheduled run must be cancellable");
+    assert.equal(lane.isScheduled, false);
+  }
+
+  // And cancelling must not wedge the lane for the next request.
+  {
+    const timer = fakeTimer();
+    let runs = 0;
+    const lane = new TaskLane({ timer: timer.port, delayMs: 10, run: async () => void runs++ });
+    lane.schedule();
+    lane.cancel();
+    lane.schedule();
+    timer.tick();
+    await settle();
+    await settle();
+    assert.equal(runs, 1, "cancel must not leave the lane unusable");
+  }
+
+  // An explicit enqueue is someone else's awaited work; cancel() must not steal it.
+  {
+    const timer = fakeTimer();
+    let ran = false;
+    const lane = new TaskLane({ timer: timer.port, delayMs: 10, run: async () => {} });
+    const queued = lane.enqueue(async () => void (ran = true));
+    lane.cancel();
+    await queued;
+    assert.equal(ran, true, "cancel() drops the scheduled run, not awaited work");
+  }
+
   // A dead instance neither schedules nor runs.
   {
     const timer = fakeTimer();
@@ -547,17 +618,6 @@ const settings = (over = {}) => ({
     assert.equal(timer.count, 0, "and nothing new may be scheduled");
   }
 
-  // runNow jumps no queue.
-  {
-    const order = [];
-    const lane = new TaskLane({ timer: fakeTimer().port, delayMs: 0, run: async () => void order.push("run") });
-    const queued = lane.enqueue(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      order.push("queued");
-    });
-    await Promise.all([queued, lane.runNow()]);
-    assert.deepEqual(order, ["queued", "run"]);
-  }
 }
 
 // --- The parse index ----------------------------------------------------------
@@ -666,6 +726,15 @@ const settings = (over = {}) => ({
 {
   const { SettingsStore, TaskLane } = app;
 
+  const fakeTimer = () => {
+    let next = 1;
+    const scheduled = new Map();
+    return {
+      port: { set: (fn) => { const id = next++; scheduled.set(id, fn); return id; }, clear: (id) => scheduled.delete(id) },
+      tick() { const due = [...scheduled.values()]; scheduled.clear(); for (const fn of due) fn(); },
+    };
+  };
+
   const noTimer = { set: () => 0, clear: () => {} };
   const makeStore = (over = {}) => {
     const saves = [];
@@ -678,8 +747,12 @@ const settings = (over = {}) => ({
       exists: async () => data.present,
       ...over,
     };
-    const lane = new TaskLane({ timer: noTimer, delayMs: 0, run: async () => {} });
-    return { store: new SettingsStore(data, lane, () => true), data, saves };
+    const timer = fakeTimer();
+    // Wired the way production wires it, so the saveSoon() leg can actually reach a write.
+    const holder = {};
+    const lane = new TaskLane({ timer: timer.port, delayMs: 0, run: () => holder.store.write() });
+    holder.store = new SettingsStore(data, lane, () => true);
+    return { store: holder.store, data, saves, timer };
   };
 
   // A genuine first run: no file, defaults, and saving works.
@@ -696,13 +769,15 @@ const settings = (over = {}) => ({
   // The dangerous case: loadData() returns null because the file is CORRUPT, not absent.
   // Writing defaults over it destroys the only copy of the Pro key the user paid for.
   {
-    const { store, saves } = makeStore({ present: true });
+    const { store, saves, timer } = makeStore({ present: true });
     const outcome = await store.load();
     assert.equal(outcome.unreadable, true);
     assert.ok(outcome.notice.includes("data.json"), "the user must be told where the file is");
 
     await store.save();
     store.saveSoon();
+    timer.tick();
+    await new Promise((resolve) => setImmediate(resolve));
     await store.flush();
     await store.write();
     assert.equal(saves.length, 0, "NOTHING may be written while the file is unreadable");

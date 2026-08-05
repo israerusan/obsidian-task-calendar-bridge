@@ -52,7 +52,15 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   async onload(): Promise<void> {
     // window.* rather than bare timers, so a lane still fires in a popped-out window.
     const timer = { set: (fn: () => void, ms: number) => window.setTimeout(fn, ms), clear: (handle: unknown) => window.clearTimeout(handle as number) };
-    this.saveLane = new TaskLane({ timer, delayMs: 500, alive: () => !this.unloaded, run: () => this.store.write() });
+    this.saveLane = new TaskLane({
+      timer,
+      delayMs: 500,
+      alive: () => !this.unloaded,
+      run: () => this.store.write(),
+      // Every text field in the settings tab saves through here. Without this the failure is an
+      // unhandled rejection and the setting silently reverts at the next restart.
+      onError: (error) => new Notice(`Task Calendar Bridge could not save its settings: ${describeError(error)}`, 10000),
+    });
     this.store = new SettingsStore(
       {
         load: () => this.loadData(),
@@ -63,10 +71,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       this.saveLane,
       () => !this.unloaded
     );
-
-    const outcome = await this.store.load();
-    if (outcome.notice) new Notice(outcome.notice, outcome.unreadable ? 0 : 15000);
-    await this.refreshLicense();
 
     this.writer = new CalendarWriter(
       {
@@ -88,13 +92,11 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       }
     );
 
-    this.statusBar = this.addStatusBarItem();
-    this.renderStatusBar();
-
     this.exportLane = new TaskLane({
       timer,
       delayMs: 2000,
       alive: () => !this.unloaded,
+      onError: (error) => new Notice(`Task Calendar Bridge: ${describeError(error)}`, 10000),
       run: async () => {
         // Checked when the run starts, not when it was scheduled: a licence can lapse in
         // between, and a lapsed one must not keep exporting on its own.
@@ -103,6 +105,15 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       },
     });
     this.notes = new ParseIndex({ read: (note) => this.app.vault.cachedRead(this.mustBeFile(note.path)) });
+
+    // Only now does anything touch the disk. Everything above is wiring.
+    const outcome = await this.store.load();
+    if (outcome.notice) new Notice(outcome.notice, outcome.unreadable ? 0 : 15000);
+    await this.refreshLicense();
+
+    this.statusBar = this.addStatusBarItem();
+    this.renderStatusBar();
+
 
     this.addRibbonIcon("calendar-days", "Export tasks in this note to a calendar file", () => void this.exportCurrentNoteTasks(true));
 
@@ -559,45 +570,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
 
   openImportGuide(): void {
     new HelpModal(this.app).open();
-  }
-
-  /**
-   * Two sentences: what happened, and the single most important thing to know
-   * about it. Everything else belongs in the report the second sentence points at
-   * — a 300-character toast that repeats the same upsell on export number two
-   * hundred trains people to dismiss the notice without reading it, which is
-   * precisely where the actionable errors live.
-   */
-  private summarise(report: ExportReport): string {
-    const headline = `Exported ${report.eventCount} event${report.eventCount === 1 ? "" : "s"} to ${report.path}.`;
-
-    // A publish failure outranks everything: the calendar on disk is right, but
-    // the copy people have subscribed to is not.
-    if (report.publishError) return `${headline} Publishing outside the vault failed: ${report.publishError}`;
-
-    if (report.eventCount === 0) {
-      return `${headline} It has no events, and most calendar apps refuse to import an empty calendar — check “Show last export report”.`;
-    }
-
-    // Only genuine losses are counted. Completed tasks are excluded on purpose,
-    // and an ignored field still produced an event — reporting either as "could
-    // not be exported" made a perfectly healthy export read like a failure.
-    const lost = report.counts.lost;
-    if (lost > 0) {
-      return `${headline} ${lost} task${lost === 1 ? "" : "s"} could not be exported — run “Show last export report” for details.`;
-    }
-
-    if (report.capped > 0 && !this.capNoticeShown) {
-      this.capNoticeShown = true;
-      return `${headline} Your vault has ${report.totalFound} dated tasks; the free tier exports the next ${report.freeLimit}. See the export report to unlock the rest.`;
-    }
-
-    const warnings = report.counts.warnings;
-    if (warnings > 0) {
-      return `${headline} ${warnings} task${warnings === 1 ? "" : "s"} exported with a field ignored — see the export report.`;
-    }
-
-    return report.publishedTo ? `${headline} Also published to ${report.publishedTo}.` : headline;
   }
 
   async createSampleTaskNote(): Promise<void> {
