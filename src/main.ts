@@ -17,6 +17,7 @@ import {
 } from "./core";
 import {
   buildCalendar,
+  CalendarWriter,
   entitlements,
   planReport,
   precheckExport,
@@ -58,10 +59,8 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   private exportQueue: Promise<unknown> = Promise.resolve();
   /** One trailing auto-export is enough; a queue of them is just stale work. */
   private autoExportQueued = false;
-  /** Content signature of what each output path was last written with. */
-  private lastWritten = new Map<string, string>();
-  /** Likewise for the copy outside the vault, tracked per destination. */
-  private lastPublished = new Map<string, { signature: string; path: string }>();
+  /** Owns both destinations, and the one rule they share. */
+  private writer!: CalendarWriter;
   /** True when data.json exists but could not be read — see loadSettings. */
   settingsUnreadable = false;
   /** The free-tier upsell belongs in the report, not in every single notice. */
@@ -71,6 +70,26 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     await this.refreshLicense();
+
+    this.writer = new CalendarWriter(
+      {
+        normalize: (target) => normalizePath(target),
+        exists: (target) => this.app.vault.adapter.exists(target),
+        read: (target) => this.app.vault.adapter.read(target),
+        write: (target, contents) => this.app.vault.adapter.write(target, contents),
+        mkdir: (target) => this.app.vault.adapter.mkdir(target),
+      },
+      {
+        available: () => isPublishSupported(),
+        exists: (fullPath) => publishedFileExists(fullPath),
+        write: (folder, fileName, contents) => publishCalendar(folder, fileName, contents),
+      },
+      { alive: () => !this.unloaded },
+      {
+        has: (target) => this.settings.ownedPaths.includes(target),
+        add: (target) => this.settings.ownedPaths.push(target),
+      }
+    );
 
     this.statusBar = this.addStatusBarItem();
     this.renderStatusBar();
@@ -167,8 +186,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     // overwrite whatever a freshly loaded instance had already saved.
     this.saveSettingsDebounced?.cancel();
     this.parseCache.clear();
-    this.lastWritten.clear();
-    this.lastPublished.clear();
+    this.writer.forget();
   }
 
   private onVaultChange(path: string, relevant: boolean): void {
@@ -271,7 +289,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         now: new Date(),
       });
 
-      await this.writeIcs(check.path, built.ics, built.signature);
+      await this.writer.writeToVault(check.path, built.ics, built.signature);
 
       // The vault write has succeeded by this point. A publishing problem is
       // reported alongside it, never as a failure of the export itself —
@@ -288,7 +306,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         // very first publish after someone turns publishing on, since the tasks
         // have not changed since the previous export.
         try {
-          publishedTo = await this.publish(check.path, built.ics, built.signature);
+          publishedTo = await this.publishCalendarCopy(check.path, built.ics, built.signature);
         } catch (error) {
           publishError = describeError(error);
         }
@@ -416,62 +434,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     }
   }
 
-  /** Ordering comes from the export queue, which serialises the whole pipeline. */
-  private async writeIcs(path: string, ics: string, signature: string): Promise<void> {
-    // onunload only cancels the pending debounce; an export already in flight
-    // reaches here seconds later and would otherwise write into a vault whose
-    // plugin instance is gone, clobbering the live instance's data.json.
-    if (this.unloaded) return;
-    const target = normalizePath(path);
-    await this.assertSafeTarget(target);
-
-    // Two exports of unchanged tasks differ only in DTSTAMP, so that is what the
-    // comparison ignores. Rewriting an identical calendar costs a vault write, a
-    // mtime change every sync client uploads, and a fresh download for everyone
-    // subscribed to it — for a file whose meaning did not change.
-    // The existence check matters: without it, deleting the calendar file by hand
-    // would never bring it back, because the plugin still believed it was current.
-    if (this.lastWritten.get(target) === signature && (await this.app.vault.adapter.exists(target))) return;
-
-    await this.ensureParentFolder(target);
-    await this.app.vault.adapter.write(target, ics);
-    this.lastWritten.set(target, signature);
-    if (!this.settings.ownedPaths.includes(target)) {
-      this.settings.ownedPaths.push(target);
-    }
-  }
-
-  /** Refuse to overwrite a file this plugin did not create. */
-  private async assertSafeTarget(path: string): Promise<void> {
-    if (this.settings.ownedPaths.includes(path)) return;
-    if (!(await this.app.vault.adapter.exists(path))) return;
-
-    // Ownership records live in data.json; a reinstall loses them. A file that
-    // is already one of our calendars is still ours, so read before refusing.
-    try {
-      const existing = await this.app.vault.adapter.read(path);
-      if (existing.startsWith("BEGIN:VCALENDAR") && existing.includes("Task Calendar Bridge")) return;
-    } catch {
-      // Unreadable means we cannot prove it is ours, so fall through and refuse.
-    }
-
-    throw new Error(`${path} already exists and was not created by this plugin. Choose another output path.`);
-  }
-
-  private async ensureParentFolder(path: string): Promise<void> {
-    const parts = path.split("/");
-    parts.pop();
-    if (parts.length === 0) return;
-
-    let current = "";
-    for (const part of parts) {
-      current = current ? `${current}/${part}` : part;
-      if (!(await this.app.vault.adapter.exists(current))) {
-        await this.app.vault.adapter.mkdir(current);
-      }
-    }
-  }
-
   /**
    * Publishing that is switched on but no longer running, described.
    *
@@ -487,28 +449,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     return `Publishing outside the vault is a Pro feature and is no longer running${target ? `, so the copy in ${target} is out of date` : ""}. Turn off "Publish outside the vault", or reactivate Pro.`;
   }
 
-  private async publish(vaultPath: string, ics: string, signature: string): Promise<string | undefined> {
-    if (this.unloaded) return undefined;
-    if (!this.entitlements().publish) return undefined;
-    if (!this.settings.publishPath.trim()) throw new Error('Publishing is on but no publish folder is set.');
-    if (!isPublishSupported()) throw new Error("Publishing outside the vault only works on desktop.");
-    // Flattened from the whole vault path, not just the basename: two scopes
-    // ending in the same file name would otherwise publish over each other.
-    const fileName = vaultPath.replace(/\//g, "-");
-    // Keyed on the destination as well as the file, so changing the publish
-    // folder republishes rather than being mistaken for "already up to date".
-    const key = `${this.settings.publishPath.trim()} :: ${fileName}`;
-    const known = this.lastPublished.get(key);
-    // Same existence check the vault write does: without it, deleting the
-    // published copy would never bring it back, because the plugin still
-    // believed the file it had written was sitting there.
-    if (known && known.signature === signature && (await publishedFileExists(known.path))) return known.path;
-
-    const published = await publishCalendar(this.settings.publishPath, fileName, ics);
-    this.lastPublished.set(key, { signature, path: published });
-    return published;
-  }
-
   /** The settings, expressed as the filter `shouldIncludeNote` understands. */
   private folderFilter(): FolderFilter {
     return {
@@ -517,6 +457,18 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       useIncludeFolders: this.entitlements().useIncludeFolders,
       outputPaths: [this.settings.vaultOutputPath, this.settings.currentNoteOutputPath],
     };
+  }
+
+  /**
+   * Whether the published copy should be written at all, and under what name.
+   *
+   * Flattened from the whole vault path, not just the basename: two scopes ending in the same
+   * file name would otherwise publish over each other.
+   */
+  private async publishCalendarCopy(vaultPath: string, ics: string, signature: string): Promise<string | undefined> {
+    if (this.unloaded) return undefined;
+    if (!this.entitlements().publish) return undefined;
+    return this.writer.publish({ folder: this.settings.publishPath, fileName: vaultPath.replace(/\//g, "-") }, ics, signature);
   }
 
   private shouldIncludeFile(path: string): boolean {

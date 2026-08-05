@@ -238,6 +238,178 @@ const settings = (over = {}) => ({
   assert.ok(summariseExport(empty, false).message.includes("no events"));
 }
 
+// --- The writer: one rule, two destinations -----------------------------------
+
+{
+  const { CalendarWriter } = app;
+
+  /** An in-memory vault that records every call, so the assertions can be about behaviour. */
+  const makeVault = (seed = {}) => {
+    const files = new Map(Object.entries(seed));
+    const log = { writes: [], mkdirs: [], reads: [] };
+    return {
+      files,
+      log,
+      port: {
+        normalize: (p) => p.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, ""),
+        exists: async (p) => files.has(p),
+        read: async (p) => {
+          log.reads.push(p);
+          if (!files.has(p)) throw new Error("ENOENT");
+          return files.get(p);
+        },
+        write: async (p, c) => {
+          log.writes.push(p);
+          files.set(p, c);
+        },
+        mkdir: async (p) => {
+          log.mkdirs.push(p);
+          files.set(p, "");
+        },
+      },
+    };
+  };
+
+  const makeExternal = () => {
+    const files = new Map();
+    const log = { writes: [] };
+    return {
+      files,
+      log,
+      port: {
+        available: () => true,
+        exists: async (p) => files.has(p),
+        write: async (folder, fileName, contents) => {
+          const full = `${folder}/${fileName}`;
+          log.writes.push(full);
+          files.set(full, contents);
+          return full;
+        },
+      },
+    };
+  };
+
+  const owned = () => {
+    const set = new Set();
+    return { has: (p) => set.has(p), add: (p) => set.add(p), set };
+  };
+
+  const alive = { alive: () => true };
+
+  // Unchanged content and the file still present: no write. This is what stops an editing
+  // session churning every sync client and making all subscribers re-download the same file.
+  {
+    const vault = makeVault();
+    const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "sig-a"), { wrote: true });
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "sig-a"), { wrote: false });
+    assert.equal(vault.log.writes.length, 1, "an identical calendar must not be rewritten");
+  }
+
+  // Unchanged content but the file was deleted by hand: it must come back. Without the
+  // existence half of the rule, deleting the calendar meant it never returned.
+  {
+    const vault = makeVault();
+    const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
+    await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "sig-a");
+    vault.files.delete("Calendar/tasks.ics");
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "sig-a"), { wrote: true }, "a deleted calendar must be rewritten");
+  }
+
+  // Changed content always writes.
+  {
+    const vault = makeVault();
+    const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
+    await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "sig-a");
+    await writer.writeToVault("Calendar/tasks.ics", "ICS-B", "sig-b");
+    assert.equal(vault.log.writes.length, 2);
+  }
+
+  // A file we did not create is never overwritten — this guard exists because a typo in the
+  // output path once destroyed a note.
+  {
+    const vault = makeVault({ "Notes/important.ics": "not ours" });
+    const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
+    await assert.rejects(() => writer.writeToVault("Notes/important.ics", "ICS", "sig"), /was not created by this plugin/);
+    assert.equal(vault.files.get("Notes/important.ics"), "not ours", "and it is left untouched");
+  }
+
+  // But one of our own calendars IS ours, even after a reinstall lost the ownership record.
+  {
+    const vault = makeVault({ "Calendar/tasks.ics": "BEGIN:VCALENDAR\r\nPRODID:-//Task Calendar Bridge//EN\r\nEND:VCALENDAR\r\n" });
+    const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS", "sig"), { wrote: true });
+  }
+
+  // Parent folders are created, in order, and only when missing.
+  {
+    const vault = makeVault();
+    const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
+    await writer.writeToVault("A/B/C/tasks.ics", "ICS", "sig");
+    assert.deepEqual(vault.log.mkdirs, ["A", "A/B", "A/B/C"]);
+  }
+
+  // A dead instance writes nothing. An export in flight when the plugin is disabled reaches
+  // here seconds later, and would otherwise clobber a freshly loaded instance.
+  {
+    const vault = makeVault();
+    const writer = new CalendarWriter(vault.port, makeExternal().port, { alive: () => false }, owned());
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS", "sig"), { wrote: false });
+    assert.equal(vault.log.writes.length, 0);
+  }
+
+  // Ownership is recorded, so the guard above does not fire on our own file next time.
+  {
+    const vault = makeVault();
+    const paths = owned();
+    const writer = new CalendarWriter(vault.port, makeExternal().port, alive, paths);
+    await writer.writeToVault("Calendar/tasks.ics", "ICS", "sig");
+    assert.ok(paths.set.has("Calendar/tasks.ics"));
+  }
+
+  // The published copy obeys the same rule, tracked separately — deriving "does the published
+  // copy need updating?" from "did the vault file change?" skipped the very first publish after
+  // someone turned publishing on.
+  {
+    const external = makeExternal();
+    const writer = new CalendarWriter(makeVault().port, external.port, alive, owned());
+    const target = { folder: "/cloud", fileName: "Calendar-tasks.ics" };
+    assert.equal(await writer.publish(target, "ICS-A", "sig-a"), "/cloud/Calendar-tasks.ics");
+    await writer.publish(target, "ICS-A", "sig-a");
+    assert.equal(external.log.writes.length, 1, "an identical published copy must not be rewritten");
+
+    external.files.delete("/cloud/Calendar-tasks.ics");
+    await writer.publish(target, "ICS-A", "sig-a");
+    assert.equal(external.log.writes.length, 2, "a deleted published copy must come back");
+
+    // Changing the destination republishes rather than being mistaken for "already current".
+    await writer.publish({ folder: "/elsewhere", fileName: "Calendar-tasks.ics" }, "ICS-A", "sig-a");
+    assert.equal(external.log.writes.length, 3);
+  }
+
+  // Publishing without somewhere to publish to, and on a device that cannot.
+  {
+    const writer = new CalendarWriter(makeVault().port, makeExternal().port, alive, owned());
+    await assert.rejects(() => writer.publish({ folder: "   ", fileName: "x.ics" }, "ICS", "sig"), /no publish folder/);
+  }
+  {
+    const external = makeExternal();
+    external.port.available = () => false;
+    const writer = new CalendarWriter(makeVault().port, external.port, alive, owned());
+    await assert.rejects(() => writer.publish({ folder: "/cloud", fileName: "x.ics" }, "ICS", "sig"), /only works on desktop/);
+  }
+
+  // Nothing survives a reload.
+  {
+    const vault = makeVault();
+    const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
+    await writer.writeToVault("Calendar/tasks.ics", "ICS", "sig");
+    writer.forget();
+    await writer.writeToVault("Calendar/tasks.ics", "ICS", "sig");
+    assert.equal(vault.log.writes.length, 2, "a fresh instance must not trust a previous one's memory");
+  }
+}
+
 fs.unlinkSync(outfile);
 fs.unlinkSync(coreOut);
 console.log("app tests passed");
