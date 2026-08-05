@@ -26,7 +26,8 @@ import { HelpModal } from "./HelpModal";
 import { ExportReportModal } from "./ExportReportModal";
 import { LicenseManager } from "./license/LicenseManager";
 import { isPublishSupported, publishCalendar, publishedFileExists } from "./publish";
-import { DEFAULT_SETTINGS, TaskCalendarBridgeSettingTab, type TaskCalendarBridgeSettings } from "./settings";
+import { TaskCalendarBridgeSettingTab } from "./settings/SettingsTab";
+import { DEFAULT_SETTINGS, type TaskCalendarBridgeSettings } from "./settings/schema";
 
 interface CacheEntry {
   mtime: number;

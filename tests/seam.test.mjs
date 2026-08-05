@@ -24,11 +24,24 @@ const PURE_DIRS = [
 ];
 
 /**
- * Imports that would re-create a module cycle. Every cycle in this repo is currently broken by a
- * single `import type` edge that isolatedModules erases, so there is no runtime cycle today — but
- * one value import across the same edge would create one.
+ * Import edges that must not exist.
+ *
+ * Every cycle this repo had was broken by a single `import type` edge that isolatedModules
+ * erases, so there was never a runtime cycle — but one value import across the same edge would
+ * have made one, and nothing said so. These are directed: `from` may not import `to` at all.
  */
-const FORBIDDEN_EDGES = [];
+const FORBIDDEN_EDGES = [
+  {
+    from: "src/settings",
+    to: "src/main",
+    reason: "the settings layer is typed against PluginHost precisely so it does not depend on the plugin class",
+  },
+  {
+    from: "src/core",
+    to: "src/settings",
+    reason: "core must not depend on how the plugin happens to store its configuration",
+  },
+];
 
 function sourceFiles(dir) {
   const absolute = path.join(root, dir);

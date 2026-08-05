@@ -1,6 +1,6 @@
 import { App, MarkdownView, Modal, Setting, TFile } from "obsidian";
 import { isExcludedBySetting, SKIP_LABELS, type ExportReport, type SkippedTask } from "./core";
-import { PURCHASE_URL } from "./settings";
+import { PURCHASE_URL } from "./settings/schema";
 
 // The report's shape and its counting rules live in src/core/report.ts — the plugin builds
 // these, the settings tab persists them, and this file only renders them.

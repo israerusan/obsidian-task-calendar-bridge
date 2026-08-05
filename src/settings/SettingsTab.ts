@@ -1,108 +1,26 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import {
-  DEFAULT_CURRENT_NOTE_OUTPUT_PATH,
-  DEFAULT_VAULT_OUTPUT_PATH,
   describeAge,
   FREE_TASK_LIMIT,
   isSameFile,
   isValidTimeZone,
   normalizeTime,
   validateOutputPath,
-  type DuplicateIdentity,
-  type SkipCounts,
-  type SkippedTask,
-  type TimeMode,
-} from "./core";
-import { LicenseManager } from "./license/LicenseManager";
-import { isAbsolutePath, isPublishSupported } from "./publish";
-import type TaskCalendarBridgePlugin from "./main";
+} from "../core";
+import { LicenseManager } from "../license/LicenseManager";
+import { isAbsolutePath, isPublishSupported } from "../publish";
+import {
+  DEFAULT_SETTINGS,
+  PURCHASE_URL,
+  type PluginHost,
+  type ProTextKey,
+  type ProToggleKey,
+} from "./schema";
 
-export interface LastExport {
-  at: string;
-  scope: string;
-  path: string;
-  eventCount: number;
-  /** Genuine losses only — see SkipCounts. */
-  skippedCount: number;
-  counts?: SkipCounts;
-  error?: string;
-  publishError?: string;
-  /** Kept so the report survives a restart, when it is needed most. */
-  skipped?: SkippedTask[];
-  /** Likewise: an id collision is invisible until someone reads the report. */
-  duplicateIds?: DuplicateIdentity[];
-  totalFound?: number;
-  capped?: number;
-}
+// The schema, the persisted record and the purchase URL live in ./schema. This file only
+// draws the tab, and is typed against PluginHost rather than the plugin class — which is
+// what stops the settings layer importing main.ts and closes the last import cycle.
 
-/**
- * A constant, not a setting.
- *
- * It used to be persisted, and `Object.assign({}, DEFAULT_SETTINGS, loaded)`
- * always lets the stored value win — so every install froze the checkout link at
- * whatever release first wrote data.json, and moving the product page would have
- * left every existing user with a "Get Pro" button pointing at a dead page.
- */
-export const PURCHASE_URL = "https://buymeacoffee.com/vaultspotlight/e/560210";
-
-export interface TaskCalendarBridgeSettings {
-  licenseKey: string;
-  isPro: boolean;
-  licenseEmail: string;
-  calendarName: string;
-  vaultOutputPath: string;
-  currentNoteOutputPath: string;
-  defaultDurationMinutes: number;
-  timeMode: TimeMode;
-  timeZone: string;
-  allDayReminderTime: string;
-  exportTags: boolean;
-  linkToSource: boolean;
-  autoExport: boolean;
-  includeCompleted: boolean;
-  includeReminders: boolean;
-  includeRecurrence: boolean;
-  includeFolders: string;
-  excludeFolders: string;
-  publishEnabled: boolean;
-  publishPath: string;
-  lastExport: LastExport | null;
-  /** Paths this plugin created, so it never overwrites a file it does not own. */
-  ownedPaths: string[];
-  hasOnboarded: boolean;
-}
-
-export const DEFAULT_SETTINGS: TaskCalendarBridgeSettings = {
-  licenseKey: "",
-  isPro: false,
-  licenseEmail: "",
-  calendarName: "Obsidian Tasks",
-  vaultOutputPath: DEFAULT_VAULT_OUTPUT_PATH,
-  currentNoteOutputPath: DEFAULT_CURRENT_NOTE_OUTPUT_PATH,
-  defaultDurationMinutes: 30,
-  timeMode: "floating",
-  timeZone: "",
-  allDayReminderTime: "09:00",
-  exportTags: true,
-  linkToSource: true,
-  autoExport: false,
-  includeCompleted: false,
-  // Sold as "Pro adds repeating events and reminders", so they are on the
-  // moment Pro is active. Both are gated by isPro at export time anyway, and
-  // shipping them off by default made a paid feature look broken.
-  includeReminders: true,
-  includeRecurrence: true,
-  includeFolders: "",
-  excludeFolders: "",
-  publishEnabled: false,
-  publishPath: "",
-  lastExport: null,
-  ownedPaths: [],
-  hasOnboarded: false,
-};
-
-type ProToggleKey = "autoExport" | "includeCompleted" | "includeReminders" | "includeRecurrence" | "publishEnabled";
-type ProTextKey = "includeFolders" | "excludeFolders" | "publishPath";
 
 /**
  * An inline error a user can actually perceive.
@@ -118,7 +36,7 @@ function showFieldError(host: HTMLElement, message: string): HTMLElement {
 }
 
 export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
-  plugin: TaskCalendarBridgePlugin;
+  plugin: PluginHost;
   private licenseDraft = "";
   private licenseMessage = "";
   /**
@@ -131,7 +49,7 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
   /** Blur-committed fields, so closing the tab commits them too. */
   private pendingCommits: Array<() => void> = [];
 
-  constructor(app: App, plugin: TaskCalendarBridgePlugin) {
+  constructor(app: App, plugin: Plugin & PluginHost) {
     super(app, plugin);
     this.plugin = plugin;
   }
