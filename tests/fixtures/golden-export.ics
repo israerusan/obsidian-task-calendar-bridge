@@ -1,0 +1,44 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Task Calendar Bridge//EN
+CALSCALE:GREGORIAN
+X-WR-CALNAME:Obsidian Tasks
+BEGIN:VEVENT
+UID:tcb-9e87fecbb484562b@task-calendar-bridge
+DTSTAMP:20260101T000000Z
+SUMMARY:Ship the release
+DTSTART;VALUE=DATE:20260803
+DTEND;VALUE=DATE:20260804
+TRANSP:TRANSPARENT
+STATUS:CONFIRMED
+CATEGORIES:work
+DESCRIPTION:Source: Projects/Alpha.md (line 3)\nobsidian://open?vault=My%20
+ Vault&file=Projects%2FAlpha
+URL:obsidian://open?vault=My%20Vault&file=Projects%2FAlpha
+END:VEVENT
+BEGIN:VEVENT
+UID:tcb-e461ae4babfa5d97@task-calendar-bridge
+DTSTAMP:20260101T000000Z
+SUMMARY:Standup
+DTSTART:20260803T090000
+DURATION:PT15M
+TRANSP:OPAQUE
+STATUS:CONFIRMED
+CATEGORIES:work
+DESCRIPTION:Source: Projects/Alpha.md (line 4)\nobsidian://open?vault=My%20
+ Vault&file=Projects%2FAlpha
+URL:obsidian://open?vault=My%20Vault&file=Projects%2FAlpha
+END:VEVENT
+BEGIN:VEVENT
+UID:tcb-39519ee394feeda5@task-calendar-bridge
+DTSTAMP:20260101T000000Z
+SUMMARY:Conference
+DTSTART;VALUE=DATE:20260805
+DTEND;VALUE=DATE:20260808
+TRANSP:TRANSPARENT
+STATUS:CONFIRMED
+DESCRIPTION:Source: Projects/Alpha.md (line 5)\nobsidian://open?vault=My%20
+ Vault&file=Projects%2FAlpha
+URL:obsidian://open?vault=My%20Vault&file=Projects%2FAlpha
+END:VEVENT
+END:VCALENDAR

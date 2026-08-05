@@ -21,6 +21,7 @@ const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
  */
 const PURE_DIRS = [
   { dir: "src/core", reason: "tests/core.test.mjs bundles it directly, with no fake Obsidian module" },
+  { dir: "src/app", reason: "tests/app.test.mjs bundles it directly — the export pipeline is only testable while it stays pure" },
 ];
 
 /**

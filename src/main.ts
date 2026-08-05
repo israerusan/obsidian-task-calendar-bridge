@@ -3,24 +3,28 @@ import {
   FREE_TASK_LIMIT,
   compareTasks,
   describeAge,
-  generateIcsCalendar,
-  isSameFile,
   localToday,
   parseTasksFromMarkdown,
-  selectUpcoming,
   shouldIncludeNote,
   validateOutputPath,
   countSkips,
-  icsSignature,
-  sampleSkips,
   type CalendarTask,
-  type DuplicateIdentity,
   type ExportReport,
   type FolderFilter,
   type ParseOptions,
   type ParseResult,
   type SkippedTask,
 } from "./core";
+import {
+  buildCalendar,
+  entitlements,
+  planReport,
+  precheckExport,
+  selectForExport,
+  summariseExport,
+  type CalendarOptions,
+  type Entitlements,
+} from "./app";
 import { SAMPLE_TASK_NOTE } from "./core/help";
 import { HelpModal } from "./HelpModal";
 import { ExportReportModal } from "./ExportReportModal";
@@ -74,7 +78,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     this.autoExportDebounced = debounce(
       () => {
         if (this.unloaded) return;
-        if (!this.settings.isPro || !this.settings.autoExport) return;
+        if (!this.entitlements().autoExport) return;
         // Coalesce: while one auto-export is running, further edits need exactly
         // one follow-up run, not one per edit. Without this a large vault could
         // spend minutes replaying snapshots that were stale before they started.
@@ -209,12 +213,8 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         skipped.push(...result.skipped);
       }
 
-      if (this.settings.isPro) {
-        return { tasks: all.sort(compareTasks), skipped, totalFound: all.length, capped: 0 };
-      }
-
-      const tasks = selectUpcoming(all, FREE_TASK_LIMIT, localToday());
-      return { tasks, skipped, totalFound: all.length, capped: Math.max(0, all.length - tasks.length) };
+      const selected = selectForExport(all, this.entitlements(), localToday());
+      return { ...selected, skipped };
     });
   }
 
@@ -245,53 +245,33 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     this.autoExportQueued = false;
     if (this.unloaded) return;
 
-    // Refusing to save data.json is not enough on its own. With settings we could
-    // not read, `this.settings` is a set of invented defaults — the default output
-    // path, no license, no publish folder, no folder filters — and exporting under
-    // them would overwrite a Pro user's real calendar with a 25-event free-tier
-    // stub. assertSafeTarget would wave it through, too, because the file it is
-    // about to destroy is one of ours.
-    if (this.settingsUnreadable) {
-      new Notice(
-        `Task Calendar Bridge will not export while it cannot read its settings: it would write over your calendar using default settings. Restore or fix ${this.dataPath()} and restart Obsidian.`,
-        10000
-      );
-      return;
-    }
-
-    const check = validateOutputPath(rawPath);
+    const check = precheckExport({
+      settingsUnreadable: this.settingsUnreadable,
+      dataPath: this.dataPath(),
+      rawPath,
+      vaultOutputPath: this.settings.vaultOutputPath,
+      currentNoteOutputPath: this.settings.currentNoteOutputPath,
+    });
     if (!check.ok) {
-      await this.fail(scope, rawPath, check.error ?? "Invalid output path.");
-      return;
-    }
-
-    // Compared case-insensitively: on Windows and macOS `Calendar/Tasks.ics`
-    // and `calendar/tasks.ics` are one file, and each scope would overwrite the
-    // other exactly as they did in 1.0.x.
-    if (isSameFile(this.settings.vaultOutputPath, this.settings.currentNoteOutputPath)) {
-      await this.fail(scope, rawPath, "The vault and current-note output paths are the same file. Give them different paths.");
+      // Unreadable settings is not an export failure to record — recording it
+      // would mean writing to the very file we just said we cannot trust.
+      if (this.settingsUnreadable) new Notice(check.message, 10000);
+      else await this.fail(scope, rawPath, check.message);
       return;
     }
 
     try {
       const collected = await collect();
-      const { ics, eventCount, duplicateIds } = generateIcsCalendar(collected.tasks, {
-        calendarName: this.settings.calendarName,
-        productId: "-//Task Calendar Bridge//EN",
-        defaultDurationMinutes: this.settings.defaultDurationMinutes,
-        timeMode: this.settings.timeMode,
-        timeZone: this.settings.timeZone,
-        allDayReminderTime: this.settings.allDayReminderTime,
+      const built = buildCalendar({
+        tasks: collected.tasks,
+        skipped: collected.skipped,
+        options: this.calendarOptions(),
+        // Read once, here, rather than reached for in the middle of building the file.
         vaultName: this.app.vault.getName(),
-        exportTags: this.settings.exportTags,
-        linkToSource: this.settings.linkToSource,
+        now: new Date(),
       });
 
-      const counts = countSkips(collected.skipped);
-      const duplicates: DuplicateIdentity[] = duplicateIds.map((task) => ({ sourcePath: task.sourcePath, line: task.line, title: task.title }));
-
-      const signature = icsSignature(ics);
-      await this.writeIcs(check.path, ics, signature);
+      await this.writeIcs(check.path, built.ics, built.signature);
 
       // The vault write has succeeded by this point. A publishing problem is
       // reported alongside it, never as a failure of the export itself —
@@ -308,7 +288,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         // very first publish after someone turns publishing on, since the tasks
         // have not changed since the previous export.
         try {
-          publishedTo = await this.publish(check.path, ics, signature);
+          publishedTo = await this.publish(check.path, built.ics, built.signature);
         } catch (error) {
           publishError = describeError(error);
         }
@@ -316,42 +296,27 @@ export default class TaskCalendarBridgePlugin extends Plugin {
 
       if (this.unloaded) return;
 
-      const report: ExportReport = {
+      const { report, lastExport } = planReport(built, {
         scope,
         path: check.path,
-        eventCount,
         totalFound: collected.totalFound,
         capped: collected.capped,
-        duplicateIds: duplicates,
-        counts,
-        // Capped, but sampled per bucket rather than off the front of one list.
-        // Slicing the flat array meant a vault whose first 200 skips were all
-        // completed tasks rendered "Not exported (37)" with no rows under it —
-        // the one heading the report exists to explain, left empty.
-        skipped: sampleSkips(collected.skipped),
+        freeLimit: FREE_TASK_LIMIT,
+        now: new Date(),
         publishedTo,
         publishError,
-        freeLimit: FREE_TASK_LIMIT,
-      };
+      });
       this.lastReport = report;
-      this.settings.lastExport = {
-        at: new Date().toISOString(),
-        scope,
-        path: check.path,
-        eventCount,
-        skippedCount: counts.lost,
-        counts,
-        duplicateIds: duplicates.slice(0, 50),
-        publishError,
-        // Persisted so "Show last export report" still works after a restart —
-        // which is exactly when a user notices tasks missing from their calendar.
-        skipped: sampleSkips(collected.skipped),
-        totalFound: collected.totalFound,
-        capped: collected.capped,
-      };
+      this.settings.lastExport = lastExport;
       this.renderStatusBar();
 
-      if (showNotice) new Notice(this.summarise(report), 8000);
+      if (showNotice) {
+        // The formatter reports whether it spent the once-per-session upsell,
+        // rather than reaching back into the plugin to set a flag.
+        const summary = summariseExport(report, this.capNoticeShown);
+        this.capNoticeShown = summary.capNoticeShown;
+        new Notice(summary.message, 8000);
+      }
     } catch (error) {
       await this.fail(scope, rawPath, describeError(error));
       return;
@@ -390,12 +355,30 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     }
   }
 
-  /** Every Pro gate that changes what the parser produces, in one place. */
-  private parseOptions(): ParseOptions {
+  /** What this licence allows, derived in one place rather than at 22 call sites. */
+  private entitlements(): Entitlements {
+    return entitlements(this.settings);
+  }
+
+  /** The settings that shape the generated file, as the pure builder wants them. */
+  private calendarOptions(): CalendarOptions {
     return {
-      includeCompleted: this.settings.isPro && this.settings.includeCompleted,
-      includeRecurrence: this.settings.isPro && this.settings.includeRecurrence,
-      includeReminders: this.settings.isPro && this.settings.includeReminders,
+      calendarName: this.settings.calendarName,
+      defaultDurationMinutes: this.settings.defaultDurationMinutes,
+      timeMode: this.settings.timeMode,
+      timeZone: this.settings.timeZone,
+      allDayReminderTime: this.settings.allDayReminderTime,
+      exportTags: this.settings.exportTags,
+      linkToSource: this.settings.linkToSource,
+    };
+  }
+
+  private parseOptions(): ParseOptions {
+    const rights = this.entitlements();
+    return {
+      includeCompleted: rights.includeCompleted,
+      includeRecurrence: rights.includeRecurrence,
+      includeReminders: rights.includeReminders,
     };
   }
 
@@ -499,15 +482,14 @@ export default class TaskCalendarBridgePlugin extends Plugin {
    * updating it.
    */
   private describeInertPublish(): string | undefined {
-    if (!this.settings.publishEnabled) return undefined;
-    if (this.settings.isPro) return undefined;
+    if (!this.entitlements().publishIsInert) return undefined;
     const target = this.settings.publishPath.trim();
     return `Publishing outside the vault is a Pro feature and is no longer running${target ? `, so the copy in ${target} is out of date` : ""}. Turn off "Publish outside the vault", or reactivate Pro.`;
   }
 
   private async publish(vaultPath: string, ics: string, signature: string): Promise<string | undefined> {
     if (this.unloaded) return undefined;
-    if (!this.settings.isPro || !this.settings.publishEnabled) return undefined;
+    if (!this.entitlements().publish) return undefined;
     if (!this.settings.publishPath.trim()) throw new Error('Publishing is on but no publish folder is set.');
     if (!isPublishSupported()) throw new Error("Publishing outside the vault only works on desktop.");
     // Flattened from the whole vault path, not just the basename: two scopes
@@ -532,7 +514,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     return {
       includeFolders: this.settings.includeFolders,
       excludeFolders: this.settings.excludeFolders,
-      useIncludeFolders: this.settings.isPro,
+      useIncludeFolders: this.entitlements().useIncludeFolders,
       outputPaths: [this.settings.vaultOutputPath, this.settings.currentNoteOutputPath],
     };
   }
