@@ -63,6 +63,10 @@ The strongest Pro workflow is:
 
 If you only need occasional one-off exports, Free is enough. If you want your Markdown task system and your calendar to stay in sync like adults, Pro is the point.
 
+![Task Calendar Bridge Pro proof: live Obsidian note on the left, real exported calendar output on the right](docs/assets/task-calendar-bridge-pro-proof-v1.png)
+
+> Premium proof from the live Pro demo state: note capture from the Personal vault on the left, and real `current-note.ics` output from the installed Pro-enabled plugin state on the right. This still shows reminder preservation and completed-task export without faking a SaaS sync layer.
+
 ## Why people use it
 
 Obsidian users often plan work in Markdown but still need calendar visibility in Google Calendar, Apple Calendar, Outlook, TickTick, or mobile widgets. The usual alternatives are ugly: copy tasks by hand, maintain a brittle script, or accept some app-specific workflow that breaks the moment you switch tools.
