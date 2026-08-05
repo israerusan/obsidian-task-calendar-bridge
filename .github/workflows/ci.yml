@@ -1,0 +1,49 @@
+# The gate that was previously "the author remembers to run npm test".
+#
+# `test:ci` is the same suite as `test` without the lint step, which runs separately here so a
+# type error and a failing assertion are distinguishable at a glance. The license round-trip
+# skips itself when scripts/.license-private.key is absent — it is gitignored and never reaches
+# CI — so the chain completes on a clean clone.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # Release tags are the commit Obsidian's review actually scans, so verify them too.
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the oldest LTS worth supporting; 22 is what the author runs.
+        node: ["20.x", "22.x"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint and type-check
+        run: npm run lint
+
+      - name: Tests
+        run: npm run test:ci
+
+      - name: Build
+        run: npm run build
+
+      # The release assets are exactly these three files; a build that cannot produce them is a
+      # release that cannot be cut.
+      - name: Confirm release artefacts exist
+        run: test -f main.js && test -f manifest.json && test -f styles.css

@@ -10,7 +10,7 @@
     "test": "npm run lint && npm run test:unit",
     "test:ci": "npm run test:unit",
     "license:generate": "node scripts/generate-license.mjs",
-    "test:unit": "node tests/manifest-contract.test.mjs && node tests/core.test.mjs && node tests/help.test.mjs && node tests/license.test.mjs"
+    "test:unit": "node tests/seam.test.mjs && node tests/manifest-contract.test.mjs && node tests/core.test.mjs && node tests/help.test.mjs && node tests/license.test.mjs"
   },
   "keywords": [
     "obsidian",
