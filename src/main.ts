@@ -4,7 +4,6 @@ import {
   compareTasks,
   describeAge,
   localToday,
-  parseTasksFromMarkdown,
   shouldIncludeNote,
   validateOutputPath,
   countSkips,
@@ -12,11 +11,11 @@ import {
   type ExportReport,
   type FolderFilter,
   type ParseOptions,
-  type ParseResult,
   type SkippedTask,
 } from "./core";
 import {
   buildCalendar,
+  ParseIndex,
   TaskLane,
   CalendarWriter,
   entitlements,
@@ -35,12 +34,6 @@ import { isPublishSupported, publishCalendar, publishedFileExists } from "./publ
 import { TaskCalendarBridgeSettingTab } from "./settings/SettingsTab";
 import { DEFAULT_SETTINGS, type TaskCalendarBridgeSettings } from "./settings/schema";
 
-interface CacheEntry {
-  mtime: number;
-  optionsKey: string;
-  result: ParseResult;
-}
-
 export default class TaskCalendarBridgePlugin extends Plugin {
   settings: TaskCalendarBridgeSettings = { ...DEFAULT_SETTINGS };
   /** Auto-export: debounced, coalesced, serialised, cancellable — one concept. */
@@ -49,7 +42,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   private saveLane!: TaskLane;
   private statusBar?: HTMLElement;
   private lastReport: ExportReport | null = null;
-  private parseCache = new Map<string, CacheEntry>();
+  private notes!: ParseIndex;
   /** Owns both destinations, and the one rule they share. */
   private writer!: CalendarWriter;
   /** True when data.json exists but could not be read — see loadSettings. */
@@ -100,6 +93,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       },
     });
     this.saveLane = new TaskLane({ timer, delayMs: 500, alive: () => !this.unloaded, run: () => this.writeSettings() });
+    this.notes = new ParseIndex({ read: (note) => this.app.vault.cachedRead(this.mustBeFile(note.path)) });
 
     this.addRibbonIcon("calendar-days", "Export tasks in this note to a calendar file", () => void this.exportCurrentNoteTasks(true));
 
@@ -144,7 +138,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     this.registerEvent(this.app.vault.on("delete", (file) => this.onVaultChange(file.path, true)));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        this.parseCache.delete(oldPath);
+        this.notes.forget(oldPath);
         this.onVaultChange(file.path, true);
       })
     );
@@ -175,12 +169,12 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     // or worse, a settings snapshot — into a vault whose plugin instance is gone.
     this.exportLane.cancel();
     this.saveLane.cancel();
-    this.parseCache.clear();
+    this.notes.clear();
     this.writer.forget();
   }
 
   private onVaultChange(path: string, relevant: boolean): void {
-    this.parseCache.delete(path);
+    this.notes.forget(path);
     if (!relevant) return;
     // Never react to the calendar files this plugin writes itself, nor to a note
     // the folder filters exclude — a whole-vault re-export triggered by an edit
@@ -204,7 +198,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     }
 
     await this.runExport("current note", this.settings.currentNoteOutputPath, showNotice, async () => {
-      const result = await this.parseFile(file);
+      const result = await this.notes.parse({ path: file.path, mtime: file.stat.mtime }, this.parseOptions());
       return { tasks: [...result.tasks].sort(compareTasks), skipped: result.skipped, totalFound: result.tasks.length, capped: 0 };
     });
   }
@@ -226,7 +220,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
 
       for (const file of this.app.vault.getMarkdownFiles()) {
         if (!this.shouldIncludeFile(file.path)) continue;
-        const result = await this.parseFile(file);
+        const result = await this.notes.parse({ path: file.path, mtime: file.stat.mtime }, this.parseOptions());
         all.push(...result.tasks);
         skipped.push(...result.skipped);
       }
@@ -364,6 +358,13 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     }
   }
 
+  /** The index works in paths; Obsidian's cachedRead wants the file object. */
+  private mustBeFile(path: string): TFile {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) throw new Error(`${path} is no longer a file in this vault.`);
+    return file;
+  }
+
   /** What this licence allows, derived in one place rather than at 22 call sites. */
   private entitlements(): Entitlements {
     return entitlements(this.settings);
@@ -389,40 +390,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       includeRecurrence: rights.includeRecurrence,
       includeReminders: rights.includeReminders,
     };
-  }
-
-  private async parseFile(file: TFile): Promise<ParseResult> {
-    const options = this.parseOptions();
-    const optionsKey = `${options.includeCompleted}|${options.includeRecurrence}|${options.includeReminders}`;
-    const cached = this.parseCache.get(file.path);
-    if (cached && cached.mtime === file.stat.mtime && cached.optionsKey === optionsKey) return cached.result;
-
-    // Sample mtime *before* reading. Reading it afterwards paired the new mtime
-    // with old content when the note changed mid-export, caching stale tasks.
-    const mtime = file.stat.mtime;
-    const markdown = await this.app.vault.cachedRead(file);
-    const result = parseTasksFromMarkdown(markdown, file.path, options);
-    this.parseCache.set(file.path, { mtime, optionsKey, result });
-    this.trimParseCache();
-    return result;
-  }
-
-  /**
-   * A bound on the cache.
-   *
-   * One entry per markdown file is unbounded by design, and each entry holds
-   * every task and skip record the file produced. A vault of tens of thousands
-   * of notes is a real amount of retained memory for a cache whose only job is
-   * to make the *next* export cheap.
-   */
-  private trimParseCache(): void {
-    const limit = 5000;
-    if (this.parseCache.size <= limit) return;
-    // Map iterates in insertion order, so the oldest entries go first.
-    for (const key of this.parseCache.keys()) {
-      this.parseCache.delete(key);
-      if (this.parseCache.size <= limit) break;
-    }
   }
 
   /**

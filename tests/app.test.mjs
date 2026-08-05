@@ -560,6 +560,107 @@ const settings = (over = {}) => ({
   }
 }
 
+// --- The parse index ----------------------------------------------------------
+
+{
+  const { ParseIndex } = app;
+  const PRO = { includeCompleted: true, includeRecurrence: true, includeReminders: true };
+  const FREE = { includeCompleted: false, includeRecurrence: false, includeReminders: false };
+
+  const makeIndex = (contents, over = {}) => {
+    const reads = [];
+    const index = new ParseIndex({
+      read: async (note) => {
+        reads.push(note.path);
+        return contents.get(note.path);
+      },
+      ...over,
+    });
+    return { index, reads };
+  };
+
+  // An unchanged note is read once.
+  {
+    const contents = new Map([["N.md", "- [ ] A [due:: 2026-08-03]"]]);
+    const { index, reads } = makeIndex(contents);
+    await index.parse({ path: "N.md", mtime: 1 }, FREE);
+    await index.parse({ path: "N.md", mtime: 1 }, FREE);
+    assert.equal(reads.length, 1, "an unchanged note must not be re-read");
+  }
+
+  // A changed mtime invalidates it.
+  {
+    const contents = new Map([["N.md", "- [ ] A [due:: 2026-08-03]"]]);
+    const { index, reads } = makeIndex(contents);
+    await index.parse({ path: "N.md", mtime: 1 }, FREE);
+    contents.set("N.md", "- [ ] A [due:: 2026-08-04]");
+    const after = await index.parse({ path: "N.md", mtime: 2 }, FREE);
+    assert.equal(reads.length, 2);
+    assert.equal(after.tasks[0].date, "2026-08-04");
+  }
+
+  // So does flipping a Pro toggle: the same bytes mean something different. A completed task
+  // becomes an event, and a repeat rule stops being reported as unavailable.
+  {
+    const contents = new Map([["N.md", "- [x] Done [due:: 2026-08-03]"]]);
+    const { index, reads } = makeIndex(contents);
+    const free = await index.parse({ path: "N.md", mtime: 1 }, FREE);
+    const pro = await index.parse({ path: "N.md", mtime: 1 }, PRO);
+    assert.equal(free.tasks.length, 0, "the free tier excludes a completed task");
+    assert.equal(pro.tasks.length, 1, "Pro exports it");
+    assert.equal(reads.length, 2, "the options are part of the cache key");
+  }
+
+  // The mtime is sampled BEFORE the read. Reading it afterwards paired a fresh stamp with stale
+  // content when the note changed mid-export, and the stale tasks then looked current forever.
+  {
+    const contents = new Map([["N.md", "- [ ] Old [due:: 2026-08-03]"]]);
+    let mtimeNow = 1;
+    const index = new ParseIndex({
+      read: async () => {
+        // The note changes while we are reading it.
+        mtimeNow = 2;
+        contents.set("N.md", "- [ ] New [due:: 2026-08-04]");
+        return "- [ ] Old [due:: 2026-08-03]";
+      },
+    });
+    await index.parse({ path: "N.md", mtime: 1 }, FREE);
+    // The next export sees the newer mtime and must re-read rather than trust the cache.
+    let reread = false;
+    const index2 = new ParseIndex({
+      read: async () => {
+        reread = true;
+        return contents.get("N.md");
+      },
+    });
+    await index2.parse({ path: "N.md", mtime: 1 }, FREE);
+    await index2.parse({ path: "N.md", mtime: mtimeNow }, FREE);
+    assert.equal(reread, true);
+  }
+
+  // Forgetting one note, and all of them.
+  {
+    const contents = new Map([["N.md", "- [ ] A [due:: 2026-08-03]"]]);
+    const { index, reads } = makeIndex(contents);
+    await index.parse({ path: "N.md", mtime: 1 }, FREE);
+    index.forget("N.md");
+    await index.parse({ path: "N.md", mtime: 1 }, FREE);
+    assert.equal(reads.length, 2);
+    index.clear();
+    assert.equal(index.size, 0);
+  }
+
+  // Bounded. One entry per Markdown file is unbounded by design, and each holds every task and
+  // skip record that file produced.
+  {
+    const contents = new Map();
+    for (let i = 0; i < 12; i++) contents.set(`N${i}.md`, "- [ ] A [due:: 2026-08-03]");
+    const { index } = makeIndex(contents, { limit: 5 });
+    for (let i = 0; i < 12; i++) await index.parse({ path: `N${i}.md`, mtime: 1 }, FREE);
+    assert.ok(index.size <= 5, `cache grew to ${index.size}`);
+  }
+}
+
 fs.unlinkSync(outfile);
 fs.unlinkSync(coreOut);
 console.log("app tests passed");
