@@ -6,6 +6,17 @@
  * user can type now goes through here first.
  */
 
+/**
+ * The default output paths.
+ *
+ * They live here rather than only in DEFAULT_SETTINGS because the setup guide
+ * documents them and the guide's test has to check the real values: asserting
+ * against a copied literal let a changed default leave the guide telling users
+ * to look for a file that is no longer written there.
+ */
+export const DEFAULT_VAULT_OUTPUT_PATH = "Calendar/tasks.ics";
+export const DEFAULT_CURRENT_NOTE_OUTPUT_PATH = "Calendar/current-note.ics";
+
 export interface PathCheck {
   ok: boolean;
   path: string;
@@ -34,13 +45,35 @@ export function validateOutputPath(input: string): PathCheck {
   return { ok: true, path };
 }
 
-/** Collapses separators and strips leading/trailing slashes; no I/O. */
+/**
+ * Collapses separators and strips leading/trailing slashes; no I/O.
+ *
+ * Also folds the two invisible spaces and applies NFC, matching what Obsidian's
+ * own `normalizePath` does to the path just before the write. When the two
+ * disagreed, the string stored in settings was not the string on disk, and every
+ * comparison against it — "is this my own output file?" — quietly answered no.
+ */
 export function normalizeVaultPath(input: string): string {
   return input
     .trim()
     .replace(/\\/g, "/")
     .replace(/\/{2,}/g, "/")
-    .replace(/^\/+|\/+$/g, "");
+    .replace(/^\/+|\/+$/g, "")
+    // The two invisible spaces a paste can carry in: NBSP and narrow NBSP.
+    .replace(/[\u00A0\u202F]/g, " ")
+    .normalize("NFC");
+}
+
+/**
+ * Whether two vault paths name the same file.
+ *
+ * Case-insensitive, because that is how Windows and macOS behave. One shared
+ * definition on purpose: the settings tab used to compare case-sensitively and
+ * accept a pair the exporter then rejected, so the user saved a setting that
+ * silently broke every future export.
+ */
+export function isSameFile(a: string, b: string): boolean {
+  return normalizeVaultPath(a).toLowerCase() === normalizeVaultPath(b).toLowerCase();
 }
 
 /**

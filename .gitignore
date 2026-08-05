@@ -3,3 +3,6 @@ main.js
 *.log
 scripts/.license-private.key
 .task-calendar-bridge/
+
+# Build output; release assets are attached to the GitHub release, not committed.
+dist/

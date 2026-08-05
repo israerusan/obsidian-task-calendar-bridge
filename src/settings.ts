@@ -1,6 +1,8 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
-import { FREE_TASK_LIMIT, isValidTimeZone, normalizeTime, validateOutputPath, type SkippedTask, type TimeMode } from "./core";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { DEFAULT_CURRENT_NOTE_OUTPUT_PATH, DEFAULT_VAULT_OUTPUT_PATH, describeAge, FREE_TASK_LIMIT, isSameFile, isValidTimeZone, normalizeTime, validateOutputPath, type SkippedTask, type TimeMode } from "./core";
+import type { DuplicateIdentity, SkipCounts } from "./ExportReportModal";
 import { LicenseManager } from "./license/LicenseManager";
+import { isAbsolutePath, isPublishSupported } from "./publish";
 import type TaskCalendarBridgePlugin from "./main";
 
 export interface LastExport {
@@ -8,20 +10,33 @@ export interface LastExport {
   scope: string;
   path: string;
   eventCount: number;
+  /** Genuine losses only — see SkipCounts. */
   skippedCount: number;
+  counts?: SkipCounts;
   error?: string;
   publishError?: string;
   /** Kept so the report survives a restart, when it is needed most. */
   skipped?: SkippedTask[];
+  /** Likewise: an id collision is invisible until someone reads the report. */
+  duplicateIds?: DuplicateIdentity[];
   totalFound?: number;
   capped?: number;
 }
+
+/**
+ * A constant, not a setting.
+ *
+ * It used to be persisted, and `Object.assign({}, DEFAULT_SETTINGS, loaded)`
+ * always lets the stored value win — so every install froze the checkout link at
+ * whatever release first wrote data.json, and moving the product page would have
+ * left every existing user with a "Get Pro" button pointing at a dead page.
+ */
+export const PURCHASE_URL = "https://buymeacoffee.com/vaultspotlight/e/560210";
 
 export interface TaskCalendarBridgeSettings {
   licenseKey: string;
   isPro: boolean;
   licenseEmail: string;
-  purchaseUrl: string;
   calendarName: string;
   vaultOutputPath: string;
   currentNoteOutputPath: string;
@@ -30,6 +45,7 @@ export interface TaskCalendarBridgeSettings {
   timeZone: string;
   allDayReminderTime: string;
   exportTags: boolean;
+  linkToSource: boolean;
   autoExport: boolean;
   includeCompleted: boolean;
   includeReminders: boolean;
@@ -48,15 +64,15 @@ export const DEFAULT_SETTINGS: TaskCalendarBridgeSettings = {
   licenseKey: "",
   isPro: false,
   licenseEmail: "",
-  purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/560210",
   calendarName: "Obsidian Tasks",
-  vaultOutputPath: "Calendar/tasks.ics",
-  currentNoteOutputPath: "Calendar/current-note.ics",
+  vaultOutputPath: DEFAULT_VAULT_OUTPUT_PATH,
+  currentNoteOutputPath: DEFAULT_CURRENT_NOTE_OUTPUT_PATH,
   defaultDurationMinutes: 30,
   timeMode: "floating",
   timeZone: "",
   allDayReminderTime: "09:00",
   exportTags: true,
+  linkToSource: true,
   autoExport: false,
   includeCompleted: false,
   // Sold as "Pro adds repeating events and reminders", so they are on the
@@ -76,10 +92,32 @@ export const DEFAULT_SETTINGS: TaskCalendarBridgeSettings = {
 type ProToggleKey = "autoExport" | "includeCompleted" | "includeReminders" | "includeRecurrence" | "publishEnabled";
 type ProTextKey = "includeFolders" | "excludeFolders" | "publishPath";
 
+/**
+ * An inline error a user can actually perceive.
+ *
+ * Colour alone says nothing to a screen reader and is ambiguous with ordinary
+ * description text for a colour-blind user, so the message is announced and
+ * labelled in the text as well as coloured.
+ */
+function showFieldError(host: HTMLElement, message: string): HTMLElement {
+  const el = host.createEl("p", { text: `Error: ${message}`, cls: "task-calendar-bridge-error" });
+  el.setAttr("role", "alert");
+  return el;
+}
+
 export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
   plugin: TaskCalendarBridgePlugin;
   private licenseDraft = "";
   private licenseMessage = "";
+  /**
+   * A key that failed verification, kept on screen so it can be repaired.
+   * Re-rendering the tab used to reset the field to the *stored* key — empty
+   * for a first-time buyer — so the key someone had just pasted vanished under
+   * an error telling them to try again, and Activate then did nothing at all.
+   */
+  private licenseRejected = "";
+  /** Blur-committed fields, so closing the tab commits them too. */
+  private pendingCommits: Array<() => void> = [];
 
   constructor(app: App, plugin: TaskCalendarBridgePlugin) {
     super(app, plugin);
@@ -89,8 +127,10 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    this.licenseDraft = this.plugin.settings.licenseKey;
+    this.pendingCommits = [];
+    this.licenseDraft = this.licenseRejected || this.plugin.settings.licenseKey;
 
+    this.renderLoadFailure(containerEl);
     this.renderLicense(containerEl);
     this.renderExport(containerEl);
     this.renderTime(containerEl);
@@ -102,6 +142,26 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
     // A stale "that key could not be verified" reappearing days later, on a tab
     // the user opened for something else, reads like a fresh failure.
     this.licenseMessage = "";
+    this.licenseRejected = "";
+    // Commit anything still sitting in a focused field, then flush. Closing the
+    // settings modal detaches the input without a reliable blur, which is exactly
+    // how someone finishes typing in one.
+    for (const commit of this.pendingCommits) commit();
+    this.pendingCommits = [];
+    void this.plugin.flushSettings();
+  }
+
+  /**
+   * Nothing in this tab can be saved while data.json is unreadable, so say so
+   * before the user spends ten minutes configuring settings that will not stick.
+   */
+  private renderLoadFailure(containerEl: HTMLElement): void {
+    if (!this.plugin.settingsUnreadable) return;
+    const banner = containerEl.createDiv({ cls: "task-calendar-bridge-status" });
+    showFieldError(
+      banner,
+      `Task Calendar Bridge could not read its settings file, so nothing here will be saved. Your license key and settings are still in ${this.plugin.dataPath()} — restore or fix that file and restart Obsidian.`
+    );
   }
 
   // --- License ---------------------------------------------------------------
@@ -117,7 +177,7 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
       .addText((text) => {
         text
           .setPlaceholder("payload.signature")
-          .setValue(this.plugin.settings.licenseKey)
+          .setValue(this.licenseDraft)
           .onChange((value) => {
             this.licenseDraft = value;
           });
@@ -149,12 +209,12 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
       status.createEl("p", {
         text: `Free: unlimited current-note export, plus the next ${FREE_TASK_LIMIT} upcoming tasks from the whole vault.`,
       });
-      const link = status.createEl("a", { text: "Get Pro", href: this.plugin.settings.purchaseUrl });
+      const link = status.createEl("a", { text: "Get Pro", href: PURCHASE_URL });
       link.setAttr("target", "_blank");
       link.setAttr("rel", "noopener");
     }
     if (this.licenseMessage) {
-      status.createEl("p", { text: this.licenseMessage, cls: "task-calendar-bridge-error" });
+      showFieldError(status, this.licenseMessage);
     }
   }
 
@@ -162,17 +222,17 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
     const key = this.licenseDraft.trim();
     // Blur fires on any focus change, including clicking another setting, so an
     // unchanged field must do nothing at all — not re-render and steal focus.
-    if (key === this.plugin.settings.licenseKey) return;
+    if (key === this.plugin.settings.licenseKey && !this.licenseRejected) return;
 
     if (!key) {
       // Emptying the field and clicking away used to wipe the stored key —
       // the same irreversible loss the verify-before-store change fixed.
       // Removing a license is now a deliberate act.
-      if (this.plugin.settings.licenseKey) {
-        this.licenseDraft = this.plugin.settings.licenseKey;
-        this.licenseMessage = 'Your license is unchanged. Use "Remove license" if you really want to deactivate Pro here.';
-        this.display();
-      }
+      this.licenseRejected = "";
+      this.licenseMessage = this.plugin.settings.licenseKey
+        ? 'Your license is unchanged. Use "Remove license" if you really want to deactivate Pro here.'
+        : "Paste your license key first, then choose Activate.";
+      this.display();
       return;
     }
 
@@ -180,15 +240,28 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
     // paste overwrote a working key, and the only copy of it was gone.
     const result = LicenseManager.verify(key);
     if (!result.valid) {
-      this.licenseMessage = `${result.error ?? "That key could not be verified."} Your existing license is unchanged.`;
+      this.licenseRejected = this.licenseDraft;
+      this.licenseMessage = `${result.error ?? "That key could not be verified."} Your existing license is unchanged — the key you pasted is still in the field above, so you can check it for a missing character or a line break.`;
       this.display();
       return;
     }
 
+    const wasPro = this.plugin.settings.isPro;
     this.plugin.settings.licenseKey = key;
+    this.licenseRejected = "";
     this.licenseMessage = "";
     await this.plugin.refreshLicense();
     this.display();
+
+    // The two features Pro is sold on — auto-export and publishing — default to
+    // off and stayed off after purchase, with nothing on screen saying so. A
+    // buyer edited notes for a week and found a stale calendar.
+    if (!wasPro && this.plugin.settings.isPro && !this.plugin.settings.autoExport) {
+      new Notice(
+        "Pro is active. Two things are still off by default: turn on “Auto-export on note changes” to keep the calendar current, and set a publish folder if you want your calendar app to subscribe instead of re-importing.",
+        12000
+      );
+    }
   }
 
   // --- Export ----------------------------------------------------------------
@@ -202,7 +275,7 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
       .addText((text) =>
         text.setValue(this.plugin.settings.calendarName).onChange((value) => {
           this.plugin.settings.calendarName = value.trim() || DEFAULT_SETTINGS.calendarName;
-          void this.plugin.saveSettings();
+          this.plugin.saveSettingsSoon();
         })
       );
 
@@ -219,17 +292,25 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
       "currentNoteOutputPath"
     );
 
-    new Setting(containerEl)
-      .setName("Default timed-task duration")
-      .setDesc("Minutes used when a task has a start time but no duration.")
-      .addText((text) =>
-        text.setValue(String(this.plugin.settings.defaultDurationMinutes)).onChange((value) => {
-          const parsed = Number.parseInt(value, 10);
-          this.plugin.settings.defaultDurationMinutes =
-            Number.isFinite(parsed) && parsed > 0 && parsed <= 1440 ? parsed : DEFAULT_SETTINGS.defaultDurationMinutes;
-          void this.plugin.saveSettings();
-        })
-      );
+    // Validated rather than coerced. `parseInt("1h")` is 1, so a plausible typo
+    // silently turned every timed task into a one-minute event; and `2000` was
+    // silently replaced by 30 while the field still read 2000, so the tab
+    // displayed one value and the exporter used another.
+    this.validatedText(containerEl, {
+      name: "Default timed-task duration",
+      desc: "Minutes used when a task has a start time but no duration. Between 1 and 1440.",
+      value: String(this.plugin.settings.defaultDurationMinutes),
+      parse: (raw) => {
+        const trimmed = raw.trim();
+        if (!/^\d+$/.test(trimmed)) return { error: "Enter a whole number of minutes, for example 30." };
+        const parsed = Number.parseInt(trimmed, 10);
+        if (parsed < 1 || parsed > 1440) return { error: "Enter between 1 and 1440 minutes (24 hours)." };
+        return { value: String(parsed) };
+      },
+      apply: (value) => {
+        this.plugin.settings.defaultDurationMinutes = Number(value);
+      },
+    });
 
     new Setting(containerEl)
       .setName("Export tags as categories")
@@ -241,20 +322,39 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl)
+      .setName("Link events back to their note")
+      .setDesc(
+        "Each event names the note and line it came from and carries a link that opens it. Turn this off to keep your vault's name and folder structure out of the file — worth doing if you publish the calendar to a URL."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.linkToSource).onChange((value) => {
+          this.plugin.settings.linkToSource = value;
+          void this.plugin.saveSettings();
+        })
+      );
+
     const last = this.plugin.settings.lastExport;
     const info = containerEl.createDiv({ cls: "task-calendar-bridge-status" });
     if (!last) {
       info.createEl("p", { text: "Nothing exported yet. Run “Export vault tasks to ICS” from the command palette." });
     } else if (last.error) {
-      info.createEl("p", { text: `Last export failed: ${last.error}`, cls: "task-calendar-bridge-error" });
+      showFieldError(info, `Last export failed: ${last.error}`);
     } else {
+      // Only genuine losses are counted here. Counting every completed checkbox
+      // in the vault as "skipped" made a healthy export read as a broken one:
+      // 400 done tasks became "400 tasks skipped".
+      const lost = last.counts?.lost ?? last.skippedCount;
+      const age = describeAge(last.at);
       info.createEl("p", {
-        text: `Last export: ${last.eventCount} event${last.eventCount === 1 ? "" : "s"} to ${last.path} (${last.scope}), ${last.skippedCount} task${last.skippedCount === 1 ? "" : "s"} skipped.`,
+        text:
+          `Last export${age ? ` ${age}` : ""}: ${last.eventCount} event${last.eventCount === 1 ? "" : "s"} to ${last.path} (${last.scope})` +
+          (lost > 0 ? `, ${lost} task${lost === 1 ? "" : "s"} could not be exported.` : "."),
       });
       // A publish that fails on every silent auto-export leaves subscribers on a
       // stale calendar; without this the only signal was a one-off notice.
       if (last.publishError) {
-        info.createEl("p", { text: `Publishing outside the vault failed: ${last.publishError}`, cls: "task-calendar-bridge-error" });
+        showFieldError(info, `Publishing outside the vault failed: ${last.publishError}`);
       }
     }
   }
@@ -278,13 +378,16 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
           }
           // Pointing both scopes at one file recreates the 1.0.x defect where a
           // current-note export silently replaced the whole-vault calendar.
+          // Compared the way the export does — case-insensitively, as Windows
+          // and macOS do — because a case-only difference used to pass here and
+          // then abort every single export with no warning at the point of entry.
           const other = key === "vaultOutputPath" ? this.plugin.settings.currentNoteOutputPath : this.plugin.settings.vaultOutputPath;
-          if (check.path === other) {
-            showError("The two output paths must be different files.");
+          if (isSameFile(check.path, other)) {
+            showError("The two output paths must be different files. On Windows and macOS that includes differing only in capitalisation.");
             return;
           }
           this.plugin.settings[key] = check.path;
-          void this.plugin.saveSettings();
+          this.plugin.saveSettingsSoon();
         })
       );
   }
@@ -335,22 +438,74 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
                 return;
               }
               this.plugin.settings.timeZone = zone;
-              void this.plugin.saveSettings();
+              this.plugin.saveSettingsSoon();
             })
         );
     }
 
-    new Setting(containerEl)
-      .setName("All-day reminder time")
-      .setDesc("When an alarm on an all-day task fires. Without this, alarms land at 23:30 the night before.")
-      .addText((text) =>
-        text.setPlaceholder("09:00").setValue(this.plugin.settings.allDayReminderTime).onChange((value) => {
-          const normalized = normalizeTime(value);
-          if (!normalized) return;
-          this.plugin.settings.allDayReminderTime = normalized;
+    this.validatedText(containerEl, {
+      name: "All-day reminder time",
+      desc: "When an alarm on an all-day task fires. Without this, alarms land at 23:30 the night before.",
+      value: this.plugin.settings.allDayReminderTime,
+      placeholder: "09:00",
+      parse: (raw) => {
+        const normalized = normalizeTime(raw);
+        // An unreadable value used to be swallowed with no message at all, so
+        // the field showed one time and the alarms fired at another.
+        if (!normalized) return { error: "Use a time like 09:00 or 7:30 pm." };
+        return { value: normalized };
+      },
+      apply: (value) => {
+        this.plugin.settings.allDayReminderTime = value;
+      },
+    });
+  }
+
+  /**
+   * A text setting that reports what it rejected and writes back what it
+   * accepted, so the value on screen is always the value in use.
+   *
+   * Validation runs on blur, not on every keystroke: mid-typing, "3" on the way
+   * to "30" is not an error worth shouting about.
+   */
+  private validatedText(
+    containerEl: HTMLElement,
+    options: {
+      name: string;
+      desc: string;
+      value: string;
+      placeholder?: string;
+      parse: (raw: string) => { value: string } | { error: string };
+      apply: (value: string) => void;
+    }
+  ): void {
+    let errorEl: HTMLElement | null = null;
+    const setting = new Setting(containerEl)
+      .setName(options.name)
+      .setDesc(options.desc)
+      .addText((text) => {
+        if (options.placeholder) text.setPlaceholder(options.placeholder);
+        text.setValue(options.value);
+        const commit = (): void => {
+          errorEl?.remove();
+          errorEl = null;
+          const result = options.parse(text.getValue());
+          if ("error" in result) {
+            errorEl = showFieldError(setting.descEl, result.error);
+            return;
+          }
+          text.setValue(result.value);
+          options.apply(result.value);
           void this.plugin.saveSettings();
-        })
-      );
+        };
+        text.inputEl.addEventListener("blur", commit);
+        text.inputEl.addEventListener("keydown", (event: KeyboardEvent) => {
+          if (event.key === "Enter") commit();
+        });
+        // Also on close. Closing the settings modal detaches the input without a
+        // reliable blur, which is exactly how someone finishes typing in a field.
+        this.pendingCommits.push(commit);
+      });
   }
 
   // --- Pro -------------------------------------------------------------------
@@ -368,32 +523,52 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
     this.proText(containerEl, "Exclude folders", "Comma-separated folders to skip.", "excludeFolders", "Archive, Templates");
 
     new Setting(containerEl).setName("Live calendar publishing").setHeading();
+
+    // Writing outside the vault needs Node's fs, which mobile does not have.
+    // Offering a working-looking toggle there meant the only way to find out was
+    // an export failing with "publishing only works on desktop".
+    if (!isPublishSupported()) {
+      new Setting(containerEl)
+        .setName("Publish outside the vault")
+        .setDesc("Available on desktop only — this device cannot write outside the vault.")
+        .setDisabled(true);
+      return;
+    }
+
     this.proToggle(
       containerEl,
       "Publish outside the vault",
-      "Also write the calendar to a folder your cloud drive syncs, so your calendar app can subscribe to it instead of you re-importing by hand. Desktop only.",
+      "Also write the calendar to a folder your cloud drive syncs, so your calendar app can subscribe to it instead of you re-importing by hand.",
       "publishEnabled"
     );
     this.proText(
       containerEl,
       "Publish folder",
-      "An absolute folder path, for example a Dropbox or iCloud Drive folder.",
+      "An absolute folder path, for example a Dropbox or OneDrive folder.",
       "publishPath",
-      "/Users/you/Dropbox/calendar"
+      "/Users/you/Dropbox/calendar",
+      (raw) => {
+        const value = raw.trim();
+        if (!value) return undefined;
+        // The same rule the writer applies, checked as it is typed rather than
+        // at the next export — which, with auto-export on, showed no notice at
+        // all and left publishing silently dead for days.
+        if (!isAbsolutePath(value)) {
+          return "Use the full path, for example /Users/you/Dropbox/calendar or C:\\Users\\you\\Dropbox\\calendar.";
+        }
+        return undefined;
+      }
     );
 
     if (this.plugin.settings.isPro && this.plugin.settings.publishEnabled && !this.plugin.settings.publishPath.trim()) {
-      containerEl.createEl("p", {
-        text: "Publishing is on but no folder is set, so nothing is being published.",
-        cls: "task-calendar-bridge-error",
-      });
+      showFieldError(containerEl, "Publishing is on but no folder is set, so nothing is being published.");
     }
   }
 
   private proToggle(containerEl: HTMLElement, name: string, desc: string, key: ProToggleKey | null): void {
     const setting = new Setting(containerEl).setName(name).setDesc(desc);
     if (!this.plugin.settings.isPro) {
-      this.lock(setting);
+      this.lock(setting, name);
       return;
     }
     if (!key) {
@@ -408,29 +583,53 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
     );
   }
 
-  private proText(containerEl: HTMLElement, name: string, desc: string, key: ProTextKey, placeholder: string): void {
+  private proText(
+    containerEl: HTMLElement,
+    name: string,
+    desc: string,
+    key: ProTextKey,
+    placeholder: string,
+    validate?: (value: string) => string | undefined
+  ): void {
     const setting = new Setting(containerEl).setName(name).setDesc(desc);
     if (!this.plugin.settings.isPro) {
-      this.lock(setting);
+      this.lock(setting, name);
       return;
     }
+    let errorEl: HTMLElement | null = null;
     setting.addText((text) =>
       text.setPlaceholder(placeholder).setValue(this.plugin.settings[key]).onChange((value) => {
-        this.plugin.settings[key] = value.trim();
-        void this.plugin.saveSettings();
+        errorEl?.remove();
+        errorEl = null;
+        const trimmed = value.trim();
+        const error = validate?.(trimmed);
+        if (error) {
+          errorEl = showFieldError(setting.descEl, error);
+          return;
+        }
+        this.plugin.settings[key] = trimmed;
+        this.plugin.saveSettingsSoon();
       })
     );
   }
 
-  /** A locked row is a sales surface, not a dead row: give it a way to buy. */
-  private lock(setting: Setting): void {
+  /**
+   * A locked row is a sales surface, not a dead row: give it a way to buy.
+   *
+   * The badge is a real element rather than CSS generated content, and each
+   * button says what it unlocks — eight buttons whose entire accessible name was
+   * the identical string "Get Pro" told a screen-reader user nothing.
+   */
+  private lock(setting: Setting, name: string): void {
     setting.settingEl.addClass("task-calendar-bridge-locked");
-    setting.addButton((button) =>
+    setting.nameEl.createSpan({ text: "Pro", cls: "task-calendar-bridge-badge" });
+    setting.addButton((button) => {
       button
         .setButtonText("Get Pro")
         .setTooltip("Unlock with a one-time license")
-        .onClick(() => window.open(this.plugin.settings.purchaseUrl, "_blank"))
-    );
+        .onClick(() => window.open(PURCHASE_URL, "_blank"));
+      button.buttonEl.setAttr("aria-label", `Get Pro to unlock ${name.toLowerCase()}`);
+    });
   }
 
   // --- Help ------------------------------------------------------------------

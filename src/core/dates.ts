@@ -17,6 +17,13 @@ export function isValidDate(value: string): boolean {
   // Date.UTC maps years 0-99 onto 1900+year, so `0026-08-01` would silently
   // become 1926 and put DTEND 1900 years after DTSTART.
   if (year < 1000) return false;
+  // The exclusive all-day DTEND is this date plus one day, so 9999-12-31 emitted
+  // `DTEND;VALUE=DATE:100000101` — a nine-digit value that is not an RFC 5545
+  // DATE (`date-fullyear = 4DIGIT`) and voids the whole file. Only that one day
+  // overflows; rejecting the whole of 9999 turned a working date into a reported
+  // failure with a message that was not true of it.
+  if (year > 9999) return false;
+  if (value === "9999-12-31") return false;
   if (month < 1 || month > 12) return false;
   if (day < 1 || day > daysInMonth(year, month)) return false;
   return true;
@@ -126,11 +133,21 @@ export function formatZonedDateTimeAsUtc(date: string, time: string, timeZone: s
 
 const DAY_MS = 86_400_000;
 
-/** Minutes the zone is ahead of UTC at the given instant (e.g. -240 for EDT). */
-function zoneOffsetMinutes(utcMs: number, timeZone: string): number | undefined {
-  let parts: Intl.DateTimeFormatPart[];
+/**
+ * One formatter per zone, not one per call.
+ *
+ * Deriving a VTIMEZONE probes the zone several hundred times, and constructing
+ * an Intl.DateTimeFormat is by far the most expensive part of doing so.
+ * `null` records a zone the runtime rejected, so it is not retried.
+ */
+const ZONE_FORMATTERS = new Map<string, Intl.DateTimeFormat | null>();
+
+function zoneFormatter(timeZone: string): Intl.DateTimeFormat | null {
+  const cached = ZONE_FORMATTERS.get(timeZone);
+  if (cached !== undefined) return cached;
+  let formatter: Intl.DateTimeFormat | null;
   try {
-    parts = new Intl.DateTimeFormat("en-US", {
+    formatter = new Intl.DateTimeFormat("en-US", {
       timeZone,
       hour12: false,
       year: "numeric",
@@ -139,10 +156,19 @@ function zoneOffsetMinutes(utcMs: number, timeZone: string): number | undefined 
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
-    }).formatToParts(new Date(utcMs));
+    });
   } catch {
-    return undefined;
+    formatter = null;
   }
+  ZONE_FORMATTERS.set(timeZone, formatter);
+  return formatter;
+}
+
+/** Minutes the zone is ahead of UTC at the given instant (e.g. -240 for EDT). */
+export function zoneOffsetMinutes(utcMs: number, timeZone: string): number | undefined {
+  const formatter = zoneFormatter(timeZone);
+  if (!formatter) return undefined;
+  const parts = formatter.formatToParts(new Date(utcMs));
 
   const read = (type: string): number => Number(parts.find((part) => part.type === type)?.value ?? NaN);
   const hour = read("hour");
@@ -159,6 +185,27 @@ export function isValidTimeZone(timeZone: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * "just now", "3 hours ago", "12 days ago" — empty when the stamp is unusable.
+ *
+ * "Is my calendar up to date?" is the whole question for a file-based calendar
+ * bridge. The export timestamp was recorded on every run and shown nowhere, so
+ * a count from three weeks ago survived a restart and read as a fresh one.
+ */
+export function describeAge(iso: string, now: Date = new Date()): string {
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return "";
+  const minutes = Math.floor((now.getTime() - then) / 60_000);
+  // A clock adjustment can put the stamp slightly in the future; that is not
+  // worth telling anyone about.
+  if (minutes < 2) return "just now";
+  if (minutes < 60) return `${minutes} minutes ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
 /** Today in the local zone as `YYYY-MM-DD` (not UTC — "today" is a wall-clock idea). */

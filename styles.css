@@ -5,12 +5,23 @@
 
 .task-calendar-bridge-error {
   color: var(--text-error);
+  font-weight: 500;
 }
 
-.task-calendar-bridge-locked .setting-item-description::after {
-  content: " Pro";
+/*
+ * The Pro badge is a real element in the DOM, not generated content.
+ * `::after { content: " Pro" }` is invisible to assistive technology, so a
+ * screen-reader user had no way to tell a locked row from an available one.
+ */
+.task-calendar-bridge-badge {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background-color: var(--background-modifier-border);
   color: var(--text-accent);
+  font-size: var(--font-smaller);
   font-weight: 600;
+  vertical-align: middle;
 }
 
 .task-calendar-bridge-report {
@@ -18,5 +29,20 @@
 }
 
 .task-calendar-bridge-report code {
+  font-size: var(--font-smaller);
+}
+
+/* Report rows link to the line they came from. */
+.task-calendar-bridge-jump {
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  cursor: var(--cursor-link);
+}
+
+.task-calendar-bridge-help ul {
+  margin: 0 0 var(--size-4-2) var(--size-4-4);
+}
+
+.task-calendar-bridge-help code {
   font-size: var(--font-smaller);
 }

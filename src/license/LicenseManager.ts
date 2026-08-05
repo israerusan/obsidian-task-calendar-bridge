@@ -7,6 +7,20 @@ export interface LicensePayload {
   issued: string;
 }
 
+/**
+ * Keys that must stop working.
+ *
+ * Verification is offline by design — no account, no server, no phone-home — so
+ * there is no way to tell an installed copy that a key was refunded or posted
+ * publicly. The only lever is a list shipped inside the plugin and updated with
+ * a release. Rotating the signing key would work too, and would break every
+ * paying customer at once, so it is not the answer.
+ *
+ * Entries are the base64url payload segment of the key (the part before the
+ * dot), so nothing identifying has to be embedded here.
+ */
+const REVOKED_PAYLOADS = new Set<string>([]);
+
 export class LicenseManager {
   private static readonly PRODUCT = "task-calendar-bridge";
 
@@ -16,6 +30,11 @@ export class LicenseManager {
 
     const parts = trimmed.split(".");
     if (parts.length !== 2) return { valid: false, error: "Invalid license format." };
+
+    // Checked before the signature: a revoked key is correctly signed.
+    if (REVOKED_PAYLOADS.has(parts[0])) {
+      return { valid: false, error: "This license key has been revoked. Contact support if you believe that is a mistake." };
+    }
 
     try {
       const payloadBytes = base64ToBytes(parts[0]);

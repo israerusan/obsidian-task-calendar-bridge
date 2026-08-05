@@ -12,6 +12,8 @@ interface NodeFs {
   promises: {
     mkdir(path: string, options: { recursive: boolean }): Promise<unknown>;
     writeFile(path: string, data: string, encoding: string): Promise<void>;
+    rename(from: string, to: string): Promise<void>;
+    rm(path: string, options: { force: boolean }): Promise<void>;
     stat(path: string): Promise<{ isDirectory(): boolean }>;
   };
 }
@@ -47,19 +49,47 @@ export async function publishCalendar(folder: string, fileName: string, contents
   const separator = target.includes("\\") && !target.includes("/") ? "\\" : "/";
   const normalized = target.replace(/[\\/]+$/, "");
   const fullPath = `${normalized}${separator}${fileName}`;
+  // Written beside the target so the rename stays on one filesystem, and named
+  // so it is obvious what it is if a crash ever leaves one behind.
+  const tempPath = `${fullPath}.tcb-tmp`;
 
   try {
     await fs.promises.mkdir(normalized, { recursive: true });
-    await fs.promises.writeFile(fullPath, contents, "utf8");
+    // Write, then rename over the target. This is the file a calendar app polls
+    // and a cloud client syncs, and both can read it at any instant: writing in
+    // place truncates first, so either could pick up a calendar with no
+    // END:VCALENDAR — and an interrupted write left the last good feed
+    // destroyed rather than merely stale.
+    await fs.promises.writeFile(tempPath, contents, "utf8");
+    await fs.promises.rename(tempPath, fullPath);
   } catch (error) {
+    // Best-effort: a leftover temp file next to the calendar is confusing, and
+    // on Windows it also blocks the next rename.
+    try {
+      await fs.promises.rm(tempPath, { force: true });
+    } catch {
+      // Nothing more to do; the real failure is reported below.
+    }
     throw new Error(`Could not write to ${normalized}: ${describe(error)}`);
   }
 
   return fullPath;
 }
 
+/** Whether a previously published file is still there. False if we cannot tell. */
+export async function publishedFileExists(fullPath: string): Promise<boolean> {
+  const fs = loadFs();
+  if (!fs) return false;
+  try {
+    await fs.promises.stat(fullPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** POSIX `/x`, Windows `C:\x` or `C:/x`, and UNC `\\server\share`. */
-function isAbsolutePath(value: string): boolean {
+export function isAbsolutePath(value: string): boolean {
   return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");
 }
 

@@ -2,9 +2,14 @@ import tseslint from "typescript-eslint";
 import obsidianmd from "eslint-plugin-obsidianmd";
 
 /**
- * Runs the SAME ruleset as Obsidian's automated community-plugin review
- * (eslint-plugin-obsidianmd) so review failures are caught locally before a release.
- * `npm run lint` is a hard gate (`--max-warnings 0`); a warning can still block review.
+ * Obsidian's automated community-plugin review ruleset (eslint-plugin-obsidianmd),
+ * so review failures are caught locally before a release. `npm run lint` is a hard
+ * gate (`--max-warnings 0`).
+ *
+ * Not byte-identical to the bot: three advisory rules are turned off at the bottom
+ * of this file, each with its reason. The bot runs its own config, so treat a green
+ * `npm run lint` as necessary rather than sufficient — only Errors block review, and
+ * the three below are Warnings there.
  */
 export default tseslint.config(
 	{

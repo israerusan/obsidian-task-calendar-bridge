@@ -29,7 +29,6 @@ export interface CalendarTask {
    * path + title + occurrence. Never contains the line number.
    */
   stableId: string;
-  raw: string;
 }
 
 export type SkipReason =
@@ -39,6 +38,7 @@ export type SkipReason =
   | "invalid-duration"
   | "line-too-long"
   | "repeat-not-enabled"
+  | "reminder-not-enabled"
   | "invalid-range"
   | "completed"
   | "cancelled"
@@ -67,6 +67,12 @@ export interface ParseOptions {
   includeCompleted: boolean;
   /** Recurrence is a Pro capability; free exports drop the rule but keep the task. */
   includeRecurrence: boolean;
+  /**
+   * Alarms are gated here rather than in the ICS layer, which has no way to
+   * report anything: a dropped alarm used to leave the report saying nothing
+   * had been skipped at all.
+   */
+  includeReminders: boolean;
 }
 
 export type TimeMode = "floating" | "zoned";
@@ -74,7 +80,6 @@ export type TimeMode = "floating" | "zoned";
 export interface IcsOptions {
   calendarName: string;
   productId: string;
-  includeReminders: boolean;
   defaultDurationMinutes: number;
   /** `floating` keeps 09:30 as 09:30 everywhere; `zoned` pins it to an instant. */
   timeMode: TimeMode;
@@ -84,6 +89,13 @@ export interface IcsOptions {
   /** Vault name, needed for a working `obsidian://open?vault=…&file=…` link. */
   vaultName: string;
   exportTags: boolean;
+  /**
+   * Whether each event names the note it came from and links back to it.
+   *
+   * Turning it off leaves the vault name, the folder structure, and the line
+   * numbers out of a file the user may well be publishing to a URL.
+   */
+  linkToSource: boolean;
 }
 
 export const SKIP_LABELS: Record<SkipReason, string> = {
@@ -93,6 +105,7 @@ export const SKIP_LABELS: Record<SkipReason, string> = {
   "invalid-duration": "Invalid duration",
   "line-too-long": "Line too long",
   "repeat-not-enabled": "Repeating tasks are off",
+  "reminder-not-enabled": "Reminder alarms are off",
   "invalid-range": "End before start",
   completed: "Completed",
   cancelled: "Cancelled",

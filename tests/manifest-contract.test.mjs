@@ -30,5 +30,31 @@ assert.equal(typeof manifest.isDesktopOnly, "boolean", "manifest.isDesktopOnly m
 assert.ok(/^\d+\.\d+\.\d+$/.test(manifest.version), "manifest.version must be x.y.z");
 assert.equal(manifest.version, pkg.version, "manifest.json and package.json versions must match");
 assert.ok(versions[manifest.version], `versions.json must contain an entry for ${manifest.version}`);
+// Equality, not truthiness. versions.json is what Obsidian's updater consults to
+// decide who may receive a release: copy the previous line forward while bumping
+// minAppVersion and the plugin is offered to users whose Obsidian then refuses
+// to load it. The old check passed happily in exactly that case.
+assert.equal(
+  versions[manifest.version],
+  manifest.minAppVersion,
+  `versions.json["${manifest.version}"] must equal manifest.minAppVersion (${manifest.minAppVersion})`
+);
+for (const [version, minApp] of Object.entries(versions)) {
+  assert.ok(/^\d+\.\d+\.\d+$/.test(version), `versions.json key "${version}" must be x.y.z`);
+  assert.ok(/^\d+\.\d+\.\d+$/.test(minApp), `versions.json["${version}"] must be x.y.z`);
+}
+
+// Every command name the README tells a user to run must actually exist.
+const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+const mainSource = fs.readFileSync(path.join(root, "src/main.ts"), "utf8");
+const commandNames = [...mainSource.matchAll(/name:\s*"([^"]+)"/g)].map((match) => match[1]);
+assert.ok(commandNames.length >= 6, "expected to find the registered command names in main.ts");
+for (const quoted of [...readme.matchAll(/\*\*([A-Z][^*]{4,60})\*\*/g)].map((match) => match[1])) {
+  if (!/^Export |^Show |^Create |^Open |^Copy /.test(quoted)) continue;
+  assert.ok(
+    commandNames.includes(quoted),
+    `README tells the user to run "${quoted}", which is not a registered command. Registered: ${commandNames.join(", ")}`
+  );
+}
 
 console.log("manifest contract tests passed");

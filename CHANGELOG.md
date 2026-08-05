@@ -3,6 +3,136 @@
 All notable changes to Task Calendar Bridge are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-08-04
+
+The hardening release. Three rounds of adversarial review over 1.1.0 turned up
+several ways a task could vanish from your calendar without a word, a way a paid
+license key could be destroyed, and a fixed time zone that was not actually
+fixed. All of it is fixed here, for free and Pro users alike.
+
+Event identity is unchanged, so a calendar you have already imported or
+subscribed to keeps updating in place — with one exception. Tasks tagged in a
+non-ASCII script had part of the tag stuck in their title, and fixing that
+changes the title, which is part of how an event is identified. Those specific
+events arrive as new ones; a subscribed calendar sorts itself out on the next
+refresh, and an imported one needs the old copies deleted once.
+
+### Fixed — tasks that silently disappeared
+
+- **A code fence inside a callout no longer swallows the rest of your note.**
+  Closing a callout's code block without the leading `>` — a constant slip — left
+  the fence open, hunting for a matching close arbitrarily far down the note.
+  Every real dated task in between was treated as sample code and left out of the
+  calendar, with **nothing in the export report** to say where they had gone.
+- **A typo in a date that is not placing the event no longer deletes the task.** A
+  task carrying both a scheduled date and a due date lost the whole event to one
+  fat-fingered deadline, even though the scheduled date that actually places it
+  was perfectly good. The unusable field is dropped and reported; the event stays.
+- **Tags work in every language.** The tag rule was ASCII-only, so `#café`
+  exported as the tag `caf` and left a stray `é` sitting in the calendar event's
+  title, while `#仕事` and `#работа` did not register at all and stayed in the
+  title whole. Any Unicode letter now works, along with emoji tags and decomposed
+  accents.
+- **A 🛫 start date is no longer lost** when the same task also carries a
+  `[start:: HH:mm]` time — and a task whose only date was that one no longer
+  disappears as undated.
+- **An alarm the free tier cannot set is now reported.** A `[reminder:: 30m]` used
+  to vanish silently while the report said nothing had been skipped.
+
+### Fixed — your data
+
+- **An unreadable settings file can no longer destroy your Pro license key.** A
+  force-quit mid-save, a cloud-sync conflict, or a file the OS still had open all
+  looked exactly like a first run, and the plugin wrote its defaults straight over
+  the top — taking with them the only copy of the key you paid for. It now refuses
+  to write anything, says so, and tells you where the file is.
+- **An older export can no longer overwrite a newer one.** Only the final write
+  was serialised, so a slow export that started first could finish last, put a
+  stale calendar on disk, and overwrite the newer run's report with it. The whole
+  pipeline is serialised now, and rapid edits coalesce into one trailing run.
+- **The published copy is written atomically** — to a temporary file, then renamed
+  over the target — so a calendar app polling it or a cloud client syncing it can
+  never read a half-written file, and an interrupted write no longer destroys the
+  last good one.
+- **Losing Pro no longer silently adds notes to your calendar.** Exclude-folder
+  filters were skipped entirely without a license, so removing one put every task
+  in Archive and Templates into the export. Exclusions now always apply.
+- **Publishing that has stopped now says so.** With Pro removed it became a silent
+  no-op, while the copy other people had subscribed to stayed frozen indefinitely.
+
+### Fixed — calendar correctness
+
+- **A fixed time zone is now actually fixed.** Repeating timed events were emitted
+  as floating local time with no zone attached, so a weekly 09:00 New York standup
+  showed at 09:00 wherever the viewer happened to be. Every timed event now
+  carries `TZID` and the file carries a real `VTIMEZONE`, generated from the
+  time-zone rules your device already has — which also means a 09:00 meeting stays
+  at 09:00 across a DST change instead of sliding to 08:00. Half-hour and
+  45-minute zones, zones whose DST step is 30 minutes, and southern-hemisphere
+  zones are all handled.
+- **A repeat rule containing a word the plugin does not understand is rejected
+  rather than guessed at.** `every week on Monday, Funday` quietly became a
+  Monday-only schedule — a rule meaning something different from what you wrote,
+  with nothing on screen to say so.
+- **A task dated the year 9999 no longer produces an invalid file.** Its exclusive
+  end date rolled into a nine-digit year, which is not a legal calendar date and
+  voided the entire export.
+
+### Added
+
+- **More repeat rules**: `every other week`, `every fortnight`, `every Monday and
+  Friday`, `every Tuesdays`, `every month on the first Monday`, `every month on
+  the last Friday`, and ordinal weekdays generally. The setup guide lists exactly
+  what is understood, and that list is now checked against the parser by a test.
+- **Link events back to their note** is now a setting. The exported file contains
+  your vault's name, each note's path, and line numbers; turning this off leaves
+  them out, which matters if you publish the calendar to a URL. The guide says so.
+- **A first-run notice**, so enabling the plugin no longer produces no visible
+  sign that anything happened at all.
+- **A legible export report.** Tasks that did not reach the calendar are separated
+  from tasks exported with one field ignored, and from tasks excluded on purpose
+  by a setting — a vault with 400 completed tasks used to report "Skipped (401)"
+  after a completely healthy export. Every row links to the line it came from, and
+  an id collision now names the tasks that collided instead of only counting them.
+- **The status bar and settings show when the last export ran**, so "is my
+  calendar up to date?" is answerable from inside the plugin.
+- **Subscribe instructions that work.** The guide told you to take the share link
+  from Dropbox, iCloud Drive, or OneDrive; none of those is a link a calendar app
+  can read. It now gives the URL form that actually works for each, and says
+  outright that iCloud Drive cannot do it. The Outlook steps cover new Outlook,
+  not only the classic File menu.
+
+### Changed
+
+- Generating a calendar is roughly twenty times faster on a large vault, and the
+  parse cache no longer holds a second copy of every note's text in memory.
+- An export that produces an identical calendar no longer rewrites the file, so an
+  editing session stops churning your sync client and everyone subscribed to it.
+- Editing a note in an excluded folder no longer triggers a whole-vault export.
+- Settings are written on a short debounce instead of once per keystroke.
+- Invalid values in the duration and reminder-time fields are reported inline
+  instead of being silently replaced while the field still showed what you typed.
+- A license key that fails to verify stays in the field so you can repair it, and
+  activating Pro now points out that auto-export and publishing are still off.
+- Publishing is shown as unavailable on mobile rather than offered and then
+  failing at export time.
+- Errors in the settings tab are announced to screen readers, and each "Get Pro"
+  button says what it unlocks.
+
+### Internal
+
+- `npm test` runs on a fresh clone: the license round-trip skips itself when the
+  private signing key is absent instead of taking the whole suite down with it,
+  and the manifest/release gate runs first so it can never be skipped.
+- Added coverage for ICS escaping, line folding over real generator output,
+  `VTIMEZONE` across ten zones, Unicode tags, the fence and date-degradation
+  fixes, the recurrence grammar, and the sample note — which is now parsed rather
+  than grepped for substrings.
+- A pinned UID corpus. Event identity is derived from the cleaned task title, so
+  any change to title cleaning silently re-identifies events and puts a duplicate
+  in every calendar anyone has imported. The suite now fails on that rather than
+  letting it ship unnoticed.
+
 ## [1.1.0] - 2026-08-01
 
 The correctness release. Several defects meant an ordinary day of editing could

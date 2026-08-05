@@ -17,10 +17,14 @@ How to activate:
 Pro unlocks:
 - Full-vault ICS export with no free-tier cap
 - Auto-export when notes change
-- Completed-task export option
+- Repeating tasks as real recurring calendar events
 - Reminder alarms
-- Timed events and durations
+- Publish a copy outside the vault, so your calendar app can subscribe (desktop)
+- Completed and cancelled task export
 - Include/exclude folder filters
+
+(Timed events, durations, multi-day events, tags as categories, priority, and
+time-zone handling are in the free tier and always have been.)
 
 If you need help, reply to this email with your Obsidian version and a short description of the issue.
 

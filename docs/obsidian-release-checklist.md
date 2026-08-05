@@ -46,7 +46,7 @@ block review). Until this is wired, walk the checklist below by hand every relea
 7. Commit → merge to the default branch.
 8. **Tag it: `git tag <version>`** where `<version>` **exactly equals** `manifest.json`'s version (no `v` prefix).
 9. **`git push origin <version>`** — push the **specific tag**. **Never `git push --tags`** (a stale local tag can fire a bogus release and steal the "Latest" marker — this bit us: an old `2.5.1` tag published itself as Latest over `2.10.0`).
-10. Verify the GitHub release published as **Latest** with assets: `main.js`, `manifest.json`, `styles.css` (+ `versions.json`).
+10. Verify the GitHub release published as **Latest** with assets: exactly `main.js`, `manifest.json`, `styles.css`. Do **not** attach `versions.json` — Obsidian reads it from the repo, and attaching it triggers an "extra unsupported files" recommendation on the scan.
 
 CI: run the full lint+test on **push to master and every PR**, and **also at tag time**
 in the release workflow (install any test deps there too, e.g. ripgrep — the release

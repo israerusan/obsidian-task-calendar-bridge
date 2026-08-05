@@ -49,7 +49,7 @@ If you live out of your calendar, the practical Pro win is:
 - the file refreshes itself when notes change
 - repeating tasks become real recurring events
 - reminders survive the jump into calendar apps
-- you can publish the calendar into Dropbox, iCloud Drive, or OneDrive and subscribe once instead of re-importing forever
+- you can publish the calendar into a cloud folder and subscribe once instead of re-importing forever (see the link forms that actually work, below — iCloud Drive is not one of them)
 
 That is the upgrade story: not "more features," but "this now runs like a real bridge instead of a demo."
 
@@ -78,7 +78,7 @@ No hosted sync layer. No account. No "please trust our server with your planning
 
 1. Install the plugin.
 2. Run `Create sample task note` from the command palette.
-3. Run `Export current note calendar`, then import the generated `.ics` file into your calendar.
+3. Run **Export current note tasks to ICS**, then import the generated `.ics` file into your calendar.
 
 If that clicks, Pro unlocks the live version of the workflow: full-vault export, auto-export, recurring events, reminders, publish-outside-the-vault, and folder filtering.
 
@@ -100,7 +100,8 @@ Both the Obsidian Tasks emoji vocabulary and Dataview-style inline fields work, 
 - **Dates**: `📅 📆 🗓` due, `⏳` scheduled, `🛫` start, or `[due:: …]`, `[scheduled:: …]`. A scheduled date places the event on the calendar; the due date travels with it as the deadline. Dataview date links (`[due:: [[Daily/2026-08-02]]]`) work too.
 - **Times**: `[start:: 14:15]`, `9:30`, or `7:00 pm`. `[duration:: 1h30m]`, `45`, or `1.5h`.
 - **Checkbox states**: `[ ]` open, `[/]` in progress, `[x]` done, `[-]` cancelled. Done and cancelled tasks are excluded unless you turn them on (Pro).
-- **Tags** on the task line become calendar categories you can colour and filter by.
+- **Repeat rules** (Pro): `every other week`, `every Monday and Friday`, `every month on the first Monday`, `every weekday`, and more. A rule that cannot be translated exactly is reported rather than guessed at.
+- **Tags** on the task line become calendar categories you can colour and filter by, in any language — `#work`, `#café`, `#仕事`.
 - **Priority** — `🔺 ⏫ 🔼 🔽 ⏬` or `[priority:: high]` — becomes calendar priority.
 - Tasks inside code fences are ignored; tasks in callouts, blockquotes, and numbered lists are exported.
 
@@ -112,9 +113,10 @@ Both the Obsidian Tasks emoji vocabulary and Dataview-style inline fields work, 
 - Whole-vault export of the next 25 upcoming tasks
 - Full Obsidian Tasks and Dataview syntax, tags as categories, priority
 - Timed events, durations, and multi-day events
-- Time zone handling: keep local wall time, or pin events to a fixed zone (DST handled)
+- Time zone handling: keep local wall time, or pin events to a fixed zone with a real `VTIMEZONE`, so times stay right across DST and while you travel
 - Stable event identity, so re-importing updates events instead of duplicating them
-- Export report, working `obsidian://` links back to the source note
+- Export report that separates what was lost from what was excluded on purpose, with a link to each line
+- Optional `obsidian://` links back to the source note, which you can turn off before publishing
 - Built-in calendar import and subscription guide, sample note generator
 - Offline-first; no account or server
 
@@ -142,16 +144,28 @@ This matters more than any other setting.
 
 **Importing** an `.ics` file copies the events in once and never looks at the file again — you have to re-import after every change. **Subscribing** points your calendar at a URL and refreshes on its own.
 
-To subscribe, the file has to be somewhere your calendar app can reach. The Pro **Publish outside the vault** setting writes a copy into any folder you choose: put it in Dropbox, iCloud Drive, or OneDrive, take the public link, and subscribe to that. Turn on auto-export and the calendar keeps itself current.
+To subscribe, the file has to be reachable over HTTP(S) **and it has to come back as the file itself, not as a web page**. This is where most setups fail: an ordinary cloud "share" link opens a preview page, and a calendar app fed that link reports that it cannot read the calendar.
+
+The Pro **Publish outside the vault** setting writes a copy into any folder you choose. To turn that copy into a link you can subscribe to:
+
+- **Dropbox** — share the file, then change `?dl=0` at the end of the link to `?raw=1`.
+- **OneDrive** — share the file, then add `?download=1` to the end of the link.
+- **A static host or a GitHub Gist raw URL** — use the direct file URL as-is.
+- **iCloud Drive cannot do this.** Its share links are web viewer pages with no direct file URL.
+
+Turn on auto-export and the published copy keeps itself current.
+
+> The exported file carries each task's title, its tags, and — unless you turn off **Link events back to their note** — the note path, line number, and your vault's name. Publish it to an unguessable or access-controlled link rather than a listed one.
 
 | Calendar | Import once | Subscribe |
 | --- | --- | --- |
 | Google Calendar | Settings → Import & export → Import | Other calendars → + → From URL |
 | Apple Calendar | File → Import | File → New Calendar Subscription |
-| Outlook | File → Open & Export → Import/Export | Add calendar → Subscribe from web |
+| Outlook (new / web) | Add calendar → Upload from file | Add calendar → Subscribe from web |
+| Outlook (classic Windows) | File → Open & Export → Import/Export | Add calendar → Subscribe from web |
 | TickTick | Calendar import | Calendar subscription settings |
 
-Refresh intervals are set by the calendar provider, not by this plugin — Google typically refreshes every few hours, and Apple Calendar lets you choose.
+Refresh intervals are set by the calendar provider, not by this plugin. Google refreshes on its own schedule — often only every several hours, sometimes longer — and Apple Calendar lets you choose. Neither refreshes on demand, so a subscribed calendar always lags the file a little.
 
 ## Install
 
@@ -166,6 +180,26 @@ Refresh intervals are set by the calendar provider, not by this plugin — Googl
    - `styles.css`
 3. Enable **Task Calendar Bridge** in Obsidian Settings -> Community plugins.
 4. Run `Create sample task note` from the command palette to test it.
+
+## Upgrading to 1.2.0
+
+For almost everyone: nothing to do. Event identity is unchanged, so a calendar
+you have already imported or subscribed to keeps updating in place.
+
+Two exceptions:
+
+- **If you tag tasks in a non-ASCII script** — `#cafe` with the accent, `#仕事`,
+  `#работа` — those tags used to be half-read, and the leftover characters were
+  part of the event title. Fixing that changes the title, and the title is part
+  of how an event is identified, so those specific events arrive as new ones.
+  A calendar you *subscribe* to sorts itself out on the next refresh. If you
+  imported the file by hand, delete the old copies of those events once.
+- **If you use Fixed time zone**, timed events now carry a proper `TZID` and the
+  file carries a real `VTIMEZONE`, instead of being converted to UTC. That is
+  what makes a repeating 09:00 meeting stay at 09:00 after a DST change rather
+  than sliding to 08:00. Your calendar app re-renders those events at the
+  correct local time on its next refresh; the events themselves are the same
+  events.
 
 ## Upgrading from 1.0.x
 

@@ -1,6 +1,6 @@
 import { isValidDate, normalizeTime, compareDates, weekdayOf, dayOfMonth, daysInMonth } from "./dates";
 import { parseRecurrence } from "./recurrence";
-import { stripTrailingNotes } from "./text";
+import { stripTrailingNotes, TAG_PATTERN } from "./text";
 import type { CalendarTask, ParseOptions, ParseResult, SkippedTask, TaskStatus } from "./types";
 
 /**
@@ -99,7 +99,11 @@ export function parseTasksFromMarkdown(markdown: string, sourcePath: string, opt
     const body = match[3].trim();
     if (!body) continue;
 
-    const excerpt = line.trim().slice(0, 120);
+    // Flattened, not sliced. A substring in V8 is a view that keeps its parent
+    // alive, so a 120-character excerpt of one task line pinned the entire text
+    // of the note it came from — and the parse cache holds one of these per file,
+    // so a large vault ended up holding a second copy of itself in memory.
+    const excerpt = flatten(line.trim().slice(0, 120));
     // `fatal` distinguishes "this task is not in your calendar" from "one field
     // of it was ignored", which the export notice counts very differently.
     const skip = (reason: SkippedTask["reason"], detail: string, fatal = true): void => {
@@ -131,15 +135,17 @@ export function parseTasksFromMarkdown(markdown: string, sourcePath: string, opt
       continue;
     }
 
-    // `start` is polymorphic: `[start:: 14:15]` is a time of day, `🛫 2026-08-02`
-    // is a start date. Validating one as the other rejected valid tasks.
-    const startIsDate = fields.start !== undefined && DATE_SHAPE_RE.test(fields.start);
-    const parsed = resolveDates(fields, startIsDate ? fields.start : undefined, skip);
+    // `[start:: …]` is polymorphic: a time of day, or a date written the long
+    // way. Validating one as the other rejected valid tasks. A 🛫 date always
+    // lives in its own slot and is the fallback when the inline field is a time.
+    const inlineStartIsDate = fields.start !== undefined && DATE_SHAPE_RE.test(fields.start);
+    const startDate = inlineStartIsDate ? fields.start : fields.startDate;
+    const parsed = resolveDates(fields, startDate, skip);
     if (!parsed) continue;
 
-    const startTime = readTime(startIsDate ? undefined : fields.start, skip);
+    const startTime = readTime(inlineStartIsDate ? undefined : fields.start, skip);
     const durationMinutes = readMinutes(fields.duration, "duration", skip);
-    const reminderMinutes = readMinutes(fields.reminder, "reminder", skip);
+    const reminderMinutes = readReminder(fields, options, skip);
     const recurrence = readRecurrence(fields, parsed.date, options, skip);
 
     tasks.push({
@@ -157,7 +163,6 @@ export function parseTasksFromMarkdown(markdown: string, sourcePath: string, opt
       recurrence,
       status,
       stableId: buildStableId(sourcePath, line, fields.id, title, occurrence),
-      raw: line,
     });
   }
 
@@ -210,7 +215,28 @@ function findFencedLines(lines: string[]): Set<number> {
   for (let index = 0; index < lines.length; index++) {
     const depth = quoteDepth(lines[index]);
     const line = stripQuoteMarkers(lines[index]);
+
     const match = FENCE_RE.exec(line);
+
+    // A blockquote cannot survive a non-blank line at a shallower depth, so a
+    // fence opened inside one ends there too. Letting it stay open — the case
+    // where someone closes a callout's code block without the `>` — sent it
+    // hunting for a same-depth closer arbitrarily far down the note, and every
+    // real task in between was marked as code and silently deleted, with
+    // nothing in the export report to explain where they went.
+    if (open && open.depth > 0 && depth < open.depth && lines[index].trim() !== "") {
+      // The lines it did cover are still code. Dropping the fence without
+      // marking them let a task written inside a callout's code block escape
+      // into the calendar as a real commitment.
+      // An unquoted fence line here is almost always the close the author meant
+      // to write with a `>`, so it is treated as one — otherwise it opens a stray
+      // top-level fence that then hides every later callout's code block.
+      const closing = match !== null && match[1][0] === open.char && match[1].length >= open.length && match[2].trim() === "";
+      for (let i = open.start; i <= (closing ? index : index - 1); i++) fenced.add(i);
+      open = null;
+      if (closing) continue;
+    }
+
     if (!match) continue;
     const marker = match[1];
 
@@ -262,6 +288,8 @@ interface Fields {
   repeat?: string;
   recurrence?: string;
   id?: string;
+  /** The 🛫 date, kept apart from `start` — see readFields. */
+  startDate?: string;
 }
 
 function readFields(body: string): Fields {
@@ -274,9 +302,12 @@ function readFields(body: string): Fields {
   // Emoji forms win only where an explicit inline field was not given.
   fields.due ??= findEmojiDate(body, EMOJI.due);
   fields.scheduled ??= findEmojiDate(body, EMOJI.scheduled);
-  fields.start ??= findEmojiDate(body, EMOJI.start);
-  fields.repeat ??= findEmojiValue(body, EMOJI.recurrence, false);
-  fields.id ??= findEmojiValue(body, EMOJI.id, true);
+  // 🛫 and `[start:: …]` are two different things — a start *date* and a start
+  // *time* — so they get two slots. Sharing one meant a task carrying both lost
+  // its 🛫 date, and a task whose only date was the 🛫 one vanished as undated.
+  fields.startDate = findEmojiDate(body, EMOJI.start);
+  fields.repeat ??= findEmojiValue(body, EMOJI.recurrence);
+  fields.id ??= findEmojiValue(body, EMOJI.id);
 
   // Legacy `@2026-08-02` shorthand, kept for notes written against 1.0.x.
   if (!fields.due) {
@@ -292,25 +323,39 @@ function resolveDates(
   startDate: string | undefined,
   skip: (reason: SkippedTask["reason"], detail: string, fatal?: boolean) => void
 ): { date: string; dueDate?: string; endDate?: string } | undefined {
-  const placement: Array<[string, string | undefined]> = [
+  const candidates: Array<[string, string | undefined]> = [
     ["scheduled", fields.scheduled],
     ["due", fields.due],
     ["start", startDate],
   ];
 
-  for (const [name, value] of placement) {
-    if (value !== undefined && !isValidDate(value)) {
-      skip("invalid-date", `"${value}" is not a real date (${name}). Use YYYY-MM-DD.`);
-      return undefined;
-    }
+  const valid = new Map<string, string>();
+  const invalid: Array<[string, string]> = [];
+  for (const [name, value] of candidates) {
+    if (value === undefined) continue;
+    if (isValidDate(value)) valid.set(name, value);
+    else invalid.push([name, value]);
   }
 
   // Scheduled means "I plan to work on it then", which is what belongs on a
   // calendar; due is the deadline and is carried into the description.
-  const date = fields.scheduled ?? fields.due ?? startDate;
+  const date = valid.get("scheduled") ?? valid.get("due") ?? valid.get("start");
   if (!date) {
-    skip("no-date", "No due, scheduled, or start date found.");
+    if (invalid.length > 0) {
+      const [name, value] = invalid[0];
+      skip("invalid-date", `"${value}" is not a real date (${name}). Use YYYY-MM-DD.`);
+    } else {
+      skip("no-date", "No due, scheduled, or start date found.");
+    }
     return undefined;
+  }
+
+  // A typo in a date that is not the one placing the event drops that field, not
+  // the task. Rejecting all three up front meant one fat-fingered deadline on a
+  // task that already carried a valid scheduled date removed it from the
+  // calendar entirely — the opposite of rule 3 at the top of this file.
+  for (const [name, value] of invalid) {
+    skip("invalid-date", `Ignored the ${name} date "${value}" — it is not a real date. The task was still exported.`, false);
   }
 
   // An unusable end date drops the end date, not the task: the placement date
@@ -324,7 +369,8 @@ function resolveDates(
     endDate = undefined;
   }
 
-  const dueDate = fields.due && fields.due !== date ? fields.due : undefined;
+  const due = valid.get("due");
+  const dueDate = due && due !== date ? due : undefined;
   return { date, dueDate, endDate };
 }
 
@@ -337,6 +383,26 @@ function readTime(value: string | undefined, skip: (reason: SkippedTask["reason"
     return undefined;
   }
   return normalized;
+}
+
+/**
+ * The reminder gate lives here, beside the recurrence gate, rather than in the
+ * ICS layer where it used to be. That layer has no way to report anything, so a
+ * `[reminder:: 30m]` on a free-tier export produced no alarm and no explanation,
+ * and the report cheerfully said nothing had been skipped.
+ */
+function readReminder(
+  fields: Fields,
+  options: ParseOptions,
+  skip: (reason: SkippedTask["reason"], detail: string, fatal?: boolean) => void
+): number | undefined {
+  const minutes = readMinutes(fields.reminder, "reminder", skip);
+  if (minutes === undefined) return undefined;
+  if (!options.includeReminders) {
+    skip("reminder-not-enabled", `No alarm was set for "${fields.reminder ?? ""}" — turn on "Reminder alarms" in settings (Pro).`, false);
+    return undefined;
+  }
+  return minutes;
 }
 
 function readRecurrence(
@@ -378,6 +444,26 @@ function describeRuleMismatch(rrule: string, date: string): string | undefined {
     return `"${date}" is a ${weekdayName(date)}, which the repeat rule does not include.`;
   }
 
+  // An ordinal BYDAY — `BYDAY=1MO`, `BYDAY=-1FR` — carries a digit, so the plain
+  // weekday check above cannot see it. Left unchecked, "every month on the first
+  // Monday" on a task dated the third Monday shipped a rule whose first
+  // occurrence some clients invent and others drop.
+  const ordinalDay = /BYDAY=(-?\d)([A-Z]{2})/.exec(rrule);
+  if (ordinalDay) {
+    if (ordinalDay[2] !== weekdayOf(date)) {
+      return `"${date}" is a ${weekdayName(date)}, which the repeat rule does not include.`;
+    }
+    const position = Number(ordinalDay[1]);
+    const day = dayOfMonth(date);
+    const [year, month] = date.split("-").map(Number);
+    const nth = Math.floor((day - 1) / 7) + 1;
+    const isLast = day + 7 > daysInMonth(year, month);
+    if (position === -1 ? !isLast : position !== nth) {
+      const described = position === -1 ? "last" : `${position}${ordinalSuffix(position)}`;
+      return `The repeat rule targets the ${described} ${weekdayName(date)} of the month but the task is dated the ${day}.`;
+    }
+  }
+
   const byMonthDay = /BYMONTHDAY=(-?\d+)/.exec(rrule);
   if (byMonthDay) {
     const wanted = Number(byMonthDay[1]);
@@ -395,21 +481,54 @@ function describeRuleMismatch(rrule: string, date: string): string | undefined {
   return undefined;
 }
 
+function ordinalSuffix(value: number): string {
+  return value === 1 ? "st" : value === 2 ? "nd" : value === 3 ? "rd" : "th";
+}
+
 function weekdayName(date: string): string {
   const names: Record<string, string> = { SU: "Sunday", MO: "Monday", TU: "Tuesday", WE: "Wednesday", TH: "Thursday", FR: "Friday", SA: "Saturday" };
   return names[weekdayOf(date)] ?? "day";
 }
 
+/**
+ * Every pattern here depends only on module constants, so all of them are built
+ * once. They used to be recompiled from a freshly interpolated template string
+ * on every field of every task line — around fifty `RegExp` constructions per
+ * line, which was most of the cost of parsing a vault.
+ */
+interface FieldPatterns {
+  bracket: RegExp;
+  paren: RegExp;
+  bare: RegExp;
+}
+
+const FIELD_PATTERNS = new Map<string, FieldPatterns>(
+  FIELD_NAMES.map((name) => [
+    name,
+    {
+      // `[^\]]*(?:\]\][^\]]*)*` is unambiguous, so a long line cannot backtrack
+      // quadratically the way a nested `(?:\[\[…\]\]|[^\]])+` alternation did.
+      bracket: new RegExp(`\\[${name}::\\s*([^\\]]*(?:\\]\\][^\\]]*)*)\\]`, "i"),
+      paren: new RegExp(`\\(${name}::\\s*([^)]*)\\)`, "i"),
+      // `u` matters: bareFieldPattern embeds a class of astral emoji code points,
+      // and without it that class degrades to lone UTF-16 surrogates — matching
+      // any character sharing a lead surrogate and none of the 🆔/⛔ family.
+      bare: new RegExp(bareFieldPattern(name), "iu"),
+    },
+  ])
+);
+
 function findInlineField(body: string, name: string): string | undefined {
-  // `[^\]]*(?:\]\][^\]]*)*` is unambiguous, so a long line cannot backtrack
-  // quadratically the way a nested `(?:\[\[…\]\]|[^\]])+` alternation did.
-  const bracket = new RegExp(`\\[${name}::\\s*([^\\]]*(?:\\]\\][^\\]]*)*)\\]`, "i").exec(body);
+  const patterns = FIELD_PATTERNS.get(name);
+  if (!patterns) return undefined;
+
+  const bracket = patterns.bracket.exec(body);
   if (bracket) return normalizeFieldValue(bracket[1]);
 
-  const paren = new RegExp(`\\(${name}::\\s*([^)]*)\\)`, "i").exec(body);
+  const paren = patterns.paren.exec(body);
   if (paren) return normalizeFieldValue(paren[1]);
 
-  const bare = new RegExp(bareFieldPattern(name), "i").exec(body);
+  const bare = patterns.bare.exec(body);
   if (bare) return normalizeFieldValue(bare[1]);
 
   return undefined;
@@ -431,7 +550,14 @@ function bareFieldPattern(name: string): string {
   // Stops at the next field (bare or bracketed), a tag, a block id, or an emoji.
   // A bare `(` no longer stops it, so a parenthetical inside a repeat rule does
   // not truncate the rule.
-  return `(?:^|\\s)${name}::\\s*(.+?)(?=\\s+[A-Za-z][A-Za-z-]*::|\\s*[\\[(][A-Za-z][A-Za-z-]*::|\\s*\\[|\\s+#|\\s+\\^[A-Za-z0-9-]+\\s*$|\\s*[${ALL_EMOJI}]|$)`;
+  //
+  // `\p{Extended_Pictographic}` as well as the Tasks vocabulary: before these
+  // patterns gained the `u` flag, the emoji class silently matched lone
+  // surrogates and so happened to stop at any emoji sharing a lead surrogate
+  // with one of ours. Fixing the flag would otherwise have narrowed that to the
+  // Tasks emoji alone, and `🔁 every week 🎉 party` would run the celebration
+  // into the repeat rule and fail to translate it.
+  return `(?:^|\\s)${name}::\\s*(.+?)(?=\\s+[A-Za-z][A-Za-z-]*::|\\s*[\\[(][A-Za-z][A-Za-z-]*::|\\s*\\[|\\s+#|\\s+\\^[A-Za-z0-9-]+\\s*$|\\s*[${ALL_EMOJI}]|\\s*\\p{Extended_Pictographic}|$)`;
 }
 
 /**
@@ -449,14 +575,25 @@ function normalizeFieldValue(value: string): string | undefined {
   return trimmed || undefined;
 }
 
+const EMOJI_DATE_PATTERNS = new Map<string, RegExp>(
+  [EMOJI.due, EMOJI.scheduled, EMOJI.start].map((emoji) => [emoji, new RegExp(`[${emoji}]\\uFE0F?\\s*(\\d{4}-\\d{2}-\\d{2})`, "u")])
+);
+
+const EMOJI_VALUE_PATTERNS = new Map<string, RegExp>([
+  // Stops at a bracket or at ANY emoji, not only the Tasks vocabulary: a
+  // decorative `🎉` after `🔁 every week` used to be read as part of the cadence,
+  // which made the whole rule untranslatable and downgraded the event to a one-off.
+  [EMOJI.recurrence, new RegExp(`[${EMOJI.recurrence}]\\uFE0F?\\s*([^\\[\\p{Extended_Pictographic}]+)`, "u")],
+  [EMOJI.id, new RegExp(`[${EMOJI.id}]\\uFE0F?\\s*(\\S+)`, "u")],
+]);
+
 function findEmojiDate(body: string, emoji: string): string | undefined {
-  const match = new RegExp(`[${emoji}]\\uFE0F?\\s*(\\d{4}-\\d{2}-\\d{2})`, "u").exec(body);
+  const match = EMOJI_DATE_PATTERNS.get(emoji)?.exec(body);
   return match ? match[1] : undefined;
 }
 
-function findEmojiValue(body: string, emoji: string, singleToken: boolean): string | undefined {
-  const value = singleToken ? "\\S+" : `[^${ALL_EMOJI}\\[]+`;
-  const match = new RegExp(`[${emoji}]\\uFE0F?\\s*(${value})`, "u").exec(body);
+function findEmojiValue(body: string, emoji: string): string | undefined {
+  const match = EMOJI_VALUE_PATTERNS.get(emoji)?.exec(body);
   return match ? match[1].trim() || undefined : undefined;
 }
 
@@ -530,14 +667,9 @@ function readPriority(body: string, field: string | undefined): number | undefin
 }
 
 
-/**
- * Obsidian tags must contain a non-digit, so `#123` (an issue number) is not a
- * tag. Anchored to a whitespace boundary so `C#` and `note.md#heading` are left
- * alone.
- */
 function readTags(body: string): string[] {
   const tags = new Set<string>();
-  const re = /(?:^|\s)#([A-Za-z0-9_/-]*[A-Za-z_/-][A-Za-z0-9_/-]*)/g;
+  const re = new RegExp(TAG_PATTERN, "gu");
   let match: RegExpExecArray | null;
   while ((match = re.exec(body)) !== null) tags.add(match[1]);
   return [...tags];
@@ -554,7 +686,7 @@ function cleanTitle(body: string): string {
   // Bare fields, stripped with the same rules used to read them, so a
   // single-token field leaves the prose that follows it in the title.
   for (const name of FIELD_NAMES) {
-    text = text.replace(new RegExp(bareFieldPattern(name), "gi"), " ");
+    text = text.replace(new RegExp(bareFieldPattern(name), "giu"), " ");
   }
 
   return text
@@ -568,7 +700,9 @@ function cleanTitle(body: string): string {
     .replace(new RegExp(`[${EMOJI.recurrence}]\\uFE0F?[^${ALL_EMOJI}\\[]*`, "gu"), " ")
     .replace(new RegExp(`[${ALL_EMOJI}]\\uFE0F?`, "gu"), " ")
     .replace(/(?:^|\s)@\d{4}-\d{2}-\d{2}(?=\s|$)/g, " ")
-    .replace(/(?:^|\s)#[A-Za-z0-9_/-]*[A-Za-z_/-][A-Za-z0-9_/-]*/g, " ")
+    // The same tag shape readTags uses, so a tag is never half-removed: the
+    // ASCII-only version left `é` behind in the title of every `#café` task.
+    .replace(new RegExp(TAG_PATTERN, "gu"), " ")
     // Links become their display text: [[note|Alias]], [[note]], [text](url).
     // The url pattern allows one level of nested parens, as Wikipedia links have.
     .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
@@ -592,6 +726,18 @@ function buildStableId(sourcePath: string, line: string, explicitId: string | un
   //    number and the date, so inserting a line above a task or rescheduling it
   //    updates the event in place instead of creating a duplicate.
   return `h${hash64(`${sourcePath} ${title} ${occurrence}`)}`;
+}
+
+/**
+ * A copy that shares nothing with the string it came from.
+ *
+ * `split("")`/`join("")` is deliberate rather than clever: every other way of
+ * writing this can be optimised back into a view of the parent string, which is
+ * exactly what has to be avoided. The inputs are at most a couple of hundred
+ * characters, so the cost does not matter.
+ */
+function flatten(value: string): string {
+  return value.split("").join("");
 }
 
 /** 64-bit FNV-1a as two 32-bit lanes — 32 bits collides at vault scale. */
