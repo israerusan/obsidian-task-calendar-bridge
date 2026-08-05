@@ -661,6 +661,132 @@ const settings = (over = {}) => ({
   }
 }
 
+// --- The settings store: the path that could destroy a paid license key -------
+
+{
+  const { SettingsStore, TaskLane } = app;
+
+  const noTimer = { set: () => 0, clear: () => {} };
+  const makeStore = (over = {}) => {
+    const saves = [];
+    const data = {
+      stored: null,
+      present: false,
+      load: async () => data.stored,
+      save: async (settings) => void saves.push(JSON.parse(JSON.stringify(settings))),
+      path: () => ".config/plugins/tcb/data.json",
+      exists: async () => data.present,
+      ...over,
+    };
+    const lane = new TaskLane({ timer: noTimer, delayMs: 0, run: async () => {} });
+    return { store: new SettingsStore(data, lane, () => true), data, saves };
+  };
+
+  // A genuine first run: no file, defaults, and saving works.
+  {
+    const { store, saves } = makeStore();
+    const outcome = await store.load();
+    assert.equal(outcome.unreadable, false);
+    assert.equal(outcome.notice, undefined, "a first run has nothing to announce");
+    assert.equal(store.settings.vaultOutputPath, "Calendar/tasks.ics");
+    await store.save();
+    assert.equal(saves.length, 1);
+  }
+
+  // The dangerous case: loadData() returns null because the file is CORRUPT, not absent.
+  // Writing defaults over it destroys the only copy of the Pro key the user paid for.
+  {
+    const { store, saves } = makeStore({ present: true });
+    const outcome = await store.load();
+    assert.equal(outcome.unreadable, true);
+    assert.ok(outcome.notice.includes("data.json"), "the user must be told where the file is");
+
+    await store.save();
+    store.saveSoon();
+    await store.flush();
+    await store.write();
+    assert.equal(saves.length, 0, "NOTHING may be written while the file is unreadable");
+  }
+
+  // If we cannot even tell whether the file exists, assume it does: refusing to save is
+  // recoverable, overwriting a license key is not.
+  {
+    const { store, saves } = makeStore({
+      exists: async () => {
+        throw new Error("EPERM");
+      },
+    });
+    assert.equal((await store.load()).unreadable, true);
+    await store.save();
+    assert.equal(saves.length, 0);
+  }
+
+  // Stored settings win over defaults, and a licence survives the round trip.
+  {
+    const { store } = makeStore({ stored: { licenseKey: "abc.def", isPro: true, calendarName: "Mine" } });
+    await store.load();
+    assert.equal(store.settings.licenseKey, "abc.def");
+    assert.equal(store.settings.calendarName, "Mine");
+    assert.equal(store.settings.exportTags, true, "unset fields fall back to the default");
+  }
+
+  // A persisted purchaseUrl must not outrank the constant — that is how every install froze on
+  // whatever checkout link it first shipped with.
+  {
+    const { store } = makeStore({ stored: { purchaseUrl: "https://old.example/dead" } });
+    await store.load();
+    assert.equal(store.settings.purchaseUrl, undefined);
+  }
+
+  // The 1.0.x migration runs exactly once and consumes its keys. Leaving them in re-applied the
+  // migration on every load, so the output path became impossible to change.
+  {
+    const { store, saves } = makeStore({ stored: { outputPath: "Cal/mine.ics", maxFreeTasks: 10 } });
+    const outcome = await store.load();
+    assert.ok(outcome.notice.includes("Cal/mine.ics"), "the user is told where their calendar went");
+    assert.equal(store.settings.vaultOutputPath, "Cal/mine.ics", "the existing feed does not move");
+    assert.equal(store.settings.currentNoteOutputPath, "Cal/mine-current-note.ics");
+    assert.ok(store.settings.ownedPaths.includes("Cal/mine.ics"));
+    assert.equal(store.settings.outputPath, undefined, "the legacy key is consumed");
+    assert.equal(store.settings.maxFreeTasks, undefined);
+
+    await store.save();
+    const written = saves[0];
+    assert.equal(written.outputPath, undefined, "and never written back");
+  }
+
+  // A 1.0.x path the new validation rejects cannot be kept, and the user is told rather than
+  // silently moved.
+  {
+    const { store } = makeStore({ stored: { outputPath: "Projects.md" } });
+    const outcome = await store.load();
+    assert.equal(store.settings.vaultOutputPath, "Calendar/tasks.ics", "falls back to the default");
+    assert.ok(outcome.notice.includes("Projects.md"));
+    assert.ok(outcome.notice.includes("must end in .ics"));
+  }
+
+  // Nothing to migrate means nothing to announce.
+  {
+    const { store } = makeStore({ stored: { calendarName: "Mine" } });
+    assert.equal((await store.load()).notice, undefined);
+  }
+
+  // A dead instance writes nothing, however it is asked.
+  {
+    const lane = new TaskLane({ timer: noTimer, delayMs: 0, run: async () => {} });
+    const saves = [];
+    const store = new SettingsStore(
+      { load: async () => ({}), save: async (s) => void saves.push(s), path: () => "p", exists: async () => false },
+      lane,
+      () => false
+    );
+    await store.load();
+    await store.save();
+    await store.write();
+    assert.equal(saves.length, 0);
+  }
+}
+
 fs.unlinkSync(outfile);
 fs.unlinkSync(coreOut);
 console.log("app tests passed");

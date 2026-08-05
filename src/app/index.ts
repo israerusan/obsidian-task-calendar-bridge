@@ -4,3 +4,4 @@ export * from "./ports";
 export * from "./CalendarWriter";
 export * from "./TaskLane";
 export * from "./ParseIndex";
+export * from "./SettingsStore";

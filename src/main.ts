@@ -5,7 +5,6 @@ import {
   describeAge,
   localToday,
   shouldIncludeNote,
-  validateOutputPath,
   countSkips,
   type CalendarTask,
   type ExportReport,
@@ -16,6 +15,7 @@ import {
 import {
   buildCalendar,
   ParseIndex,
+  SettingsStore,
   TaskLane,
   CalendarWriter,
   entitlements,
@@ -32,10 +32,10 @@ import { ExportReportModal } from "./ExportReportModal";
 import { LicenseManager } from "./license/LicenseManager";
 import { isPublishSupported, publishCalendar, publishedFileExists } from "./publish";
 import { TaskCalendarBridgeSettingTab } from "./settings/SettingsTab";
-import { DEFAULT_SETTINGS, type TaskCalendarBridgeSettings } from "./settings/schema";
+import type { TaskCalendarBridgeSettings } from "./settings/schema";
 
 export default class TaskCalendarBridgePlugin extends Plugin {
-  settings: TaskCalendarBridgeSettings = { ...DEFAULT_SETTINGS };
+  private store!: SettingsStore;
   /** Auto-export: debounced, coalesced, serialised, cancellable — one concept. */
   private exportLane!: TaskLane;
   /** Settings writes, on the same terms. Typing a path wrote data.json per keystroke. */
@@ -45,14 +45,27 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   private notes!: ParseIndex;
   /** Owns both destinations, and the one rule they share. */
   private writer!: CalendarWriter;
-  /** True when data.json exists but could not be read — see loadSettings. */
-  settingsUnreadable = false;
   /** The free-tier upsell belongs in the report, not in every single notice. */
   private capNoticeShown = false;
   private unloaded = false;
 
   async onload(): Promise<void> {
-    await this.loadSettings();
+    // window.* rather than bare timers, so a lane still fires in a popped-out window.
+    const timer = { set: (fn: () => void, ms: number) => window.setTimeout(fn, ms), clear: (handle: unknown) => window.clearTimeout(handle as number) };
+    this.saveLane = new TaskLane({ timer, delayMs: 500, alive: () => !this.unloaded, run: () => this.store.write() });
+    this.store = new SettingsStore(
+      {
+        load: () => this.loadData(),
+        save: (settings) => this.saveData(settings),
+        path: () => this.dataPath(),
+        exists: (path) => this.app.vault.adapter.exists(path),
+      },
+      this.saveLane,
+      () => !this.unloaded
+    );
+
+    const outcome = await this.store.load();
+    if (outcome.notice) new Notice(outcome.notice, outcome.unreadable ? 0 : 15000);
     await this.refreshLicense();
 
     this.writer = new CalendarWriter(
@@ -78,9 +91,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     this.statusBar = this.addStatusBarItem();
     this.renderStatusBar();
 
-    // window.* rather than bare timers, so a lane still fires in a popped-out window.
-    const timer = { set: (fn: () => void, ms: number) => window.setTimeout(fn, ms), clear: (handle: unknown) => window.clearTimeout(handle as number) };
-
     this.exportLane = new TaskLane({
       timer,
       delayMs: 2000,
@@ -92,7 +102,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         await this.vaultExport(false);
       },
     });
-    this.saveLane = new TaskLane({ timer, delayMs: 500, alive: () => !this.unloaded, run: () => this.writeSettings() });
     this.notes = new ParseIndex({ read: (note) => this.app.vault.cachedRead(this.mustBeFile(note.path)) });
 
     this.addRibbonIcon("calendar-days", "Export tasks in this note to a calendar file", () => void this.exportCurrentNoteTasks(true));
@@ -365,6 +374,33 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     return file;
   }
 
+  // --- Settings, delegated to the store ---------------------------------------
+
+  get settings(): TaskCalendarBridgeSettings {
+    return this.store.settings;
+  }
+
+  /** True when data.json exists but could not be read, so nothing may be saved. */
+  get settingsUnreadable(): boolean {
+    return this.store.unreadable;
+  }
+
+  dataPath(): string {
+    return normalizePath(`${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/data.json`);
+  }
+
+  saveSettings(): Promise<void> {
+    return this.store.save();
+  }
+
+  saveSettingsSoon(): void {
+    this.store.saveSoon();
+  }
+
+  flushSettings(): Promise<void> {
+    return this.store.flush();
+  }
+
   /** What this licence allows, derived in one place rather than at 22 call sites. */
   private entitlements(): Entitlements {
     return entitlements(this.settings);
@@ -444,133 +480,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     const result = this.settings.licenseKey ? LicenseManager.verify(this.settings.licenseKey) : undefined;
     this.settings.isPro = result?.valid ?? false;
     this.settings.licenseEmail = (result?.valid ? result.email : undefined) ?? "";
-    await this.saveSettings();
-  }
-
-  async loadSettings(): Promise<void> {
-    const data: unknown = await this.loadData();
-
-    // `loadData()` returns null for "there is no data.json yet" and for "data.json
-    // is there but could not be read or parsed" alike — a force-quit mid-write, a
-    // cloud-sync conflict, or a file the OS still has open. Only the second is
-    // dangerous: treating it as a first run makes refreshLicense write the
-    // defaults straight back over it, and the user's ONLY copy of the Pro key
-    // they paid for is gone. So when the file exists, refuse to write anything.
-    if (data === null && (await this.dataFileExists())) {
-      this.settingsUnreadable = true;
-      this.settings = { ...DEFAULT_SETTINGS };
-      new Notice(
-        `Task Calendar Bridge could not read its settings file, so it has not changed anything. Your license key and settings are still in ${this.dataPath()} — restore or fix that file and restart Obsidian. Nothing will be saved until then.`,
-        0
-      );
-      return;
-    }
-
-    const loaded = data !== null && typeof data === "object" ? (data as Record<string, unknown>) : {};
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
-
-    if (!Array.isArray(this.settings.ownedPaths)) this.settings.ownedPaths = [];
-    // The checkout link is a constant now; a persisted copy would outrank it
-    // forever and freeze every install on the URL it first shipped with.
-    delete (this.settings as unknown as Record<string, unknown>).purchaseUrl;
-    await this.migrateFrom104(loaded);
-  }
-
-  /**
-   * Where this plugin's data.json lives. Built from `manifest.dir` — or from
-   * `vault.configDir` when that is unset — because the config folder is not
-   * always `.obsidian`; users can and do rename it.
-   */
-  dataPath(): string {
-    const dir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
-    return normalizePath(`${dir}/data.json`);
-  }
-
-  private async dataFileExists(): Promise<boolean> {
-    try {
-      return await this.app.vault.adapter.exists(this.dataPath());
-    } catch {
-      // Cannot tell. Assume it is there: refusing to save is recoverable, and
-      // overwriting a license key is not.
-      return true;
-    }
-  }
-
-  /**
-   * 1.0.x kept a single `outputPath` that both export scopes wrote to. Keep it
-   * as the vault calendar so an existing user's imported feed does not move,
-   * and put the current-note file beside it rather than at the new default —
-   * the ribbon icon writes there, and silently retargeting it would leave the
-   * feed the user already subscribed to frozen.
-   *
-   * Runs exactly once: the legacy keys are consumed and deleted. Leaving them in
-   * data.json re-applied the migration on every load, so the output path became
-   * impossible to change.
-   */
-  private async migrateFrom104(loaded: Record<string, unknown>): Promise<void> {
-    const legacyPath = loaded.outputPath;
-    const hasLegacy = "outputPath" in loaded || "maxFreeTasks" in loaded;
-    if (!hasLegacy) return;
-
-    let movedFrom: string | undefined;
-    if (typeof legacyPath === "string" && legacyPath) {
-      const check = validateOutputPath(legacyPath);
-      if (check.ok) {
-        this.settings.vaultOutputPath = check.path;
-        this.settings.currentNoteOutputPath = check.path.replace(/\.ics$/i, "-current-note.ics");
-        this.settings.ownedPaths = [...new Set([...this.settings.ownedPaths, normalizePath(check.path)])];
-      } else {
-        // A 1.0.x path the new validation rejects cannot be kept, and moving a
-        // user's output silently is exactly what this migration exists to avoid.
-        movedFrom = legacyPath;
-      }
-    }
-
-    const settings = this.settings as unknown as Record<string, unknown>;
-    delete settings.outputPath;
-    delete settings.maxFreeTasks;
-    await this.saveSettings();
-
-    const moved = movedFrom
-      ? ` Your old path "${movedFrom}" is no longer allowed (a calendar file must end in .ics), so the default is used instead.`
-      : "";
-    new Notice(
-      `Task Calendar Bridge now writes two files: ${this.settings.vaultOutputPath} for the whole vault and ${this.settings.currentNoteOutputPath} for the current note.${moved} Event identity also changed — delete the calendar you imported before, then import the new file once. Importing on top of the old one duplicates every event.`,
-      15000
-    );
-  }
-
-  async saveSettings(): Promise<void> {
-    if (this.unloaded) return;
-    // Writing defaults over a data.json we could not read is exactly how a paid
-    // license key gets destroyed, so nothing is saved until it is fixed.
-    if (this.settingsUnreadable) return;
-    // Serialised: `saveData` snapshots the settings synchronously but the writes complete in
-    // whatever order they finish, so two unawaited saves could leave an older snapshot on disk.
-    await this.saveLane.enqueue(() => this.writeSettings());
-  }
-
-  /** The write itself, with no ordering concerns — the lane owns those. */
-  private writeSettings(): Promise<void> {
-    return this.saveData(this.settings);
-  }
-
-  /**
-   * For settings edited by typing.
-   *
-   * Every text field saved on each keystroke, and data.json carries the last
-   * export's skip records — tens of kilobytes — so typing a folder path wrote
-   * the whole blob once per character, and every one of those writes is a change
-   * inside the config folder that Obsidian Sync then uploads.
-   */
-  saveSettingsSoon(): void {
-    if (this.unloaded || this.settingsUnreadable) return;
-    this.saveLane.schedule();
-  }
-
-  /** Flushes any pending debounced save. Called when the settings tab closes. */
-  async flushSettings(): Promise<void> {
-    this.saveLane.cancel();
     await this.saveSettings();
   }
 
