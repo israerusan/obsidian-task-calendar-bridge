@@ -82,6 +82,13 @@ Task Calendar Bridge keeps the workflow simple:
 
 No hosted sync layer. No account. No "please trust our server with your planning system."
 
+## What it is good for
+
+- Planning launches, meetings, reviews, and deadlines in Markdown while still living out of Google Calendar, Outlook, or Apple Calendar
+- Giving dated tasks a real place on a calendar without rebuilding your workflow around another app
+- Publishing a calendar feed from your vault for a subscribe-once workflow instead of endless manual re-imports
+- Keeping reminders, recurrence, tags, and completed-task context when the calendar file is generated
+
 ## First win in 2 minutes
 
 1. Install the plugin.
@@ -90,7 +97,7 @@ No hosted sync layer. No account. No "please trust our server with your planning
 
 If that clicks, Pro unlocks the live version of the workflow: full-vault export, auto-export, recurring events, reminders, publish-outside-the-vault, and folder filtering.
 
-## Task syntax
+## Write tasks the way you already write them
 
 Both the Obsidian Tasks emoji vocabulary and Dataview-style inline fields work, and you can mix them:
 
@@ -115,7 +122,7 @@ Both the Obsidian Tasks emoji vocabulary and Dataview-style inline fields work, 
 
 **Wondering why a task is missing?** Run **Show last export report**. It lists every skipped task and the reason.
 
-## Free features
+## Free gets you to the first real win
 
 - Export every dated task from the current note, with no cap
 - Whole-vault export of the next 25 upcoming tasks
@@ -128,7 +135,7 @@ Both the Obsidian Tasks emoji vocabulary and Dataview-style inline fields work, 
 - Built-in calendar import and subscription guide, sample note generator
 - Offline-first; no account or server
 
-## Pro ($9 one-time)
+## Pro makes it usable as an ongoing workflow
 
 - Full-vault ICS export with no cap
 - Auto-export when notes change
@@ -175,6 +182,13 @@ Turn on auto-export and the published copy keeps itself current.
 
 Refresh intervals are set by the calendar provider, not by this plugin. Google refreshes on its own schedule — often only every several hours, sometimes longer — and Apple Calendar lets you choose. Neither refreshes on demand, so a subscribed calendar always lags the file a little.
 
+## Practical trust notes
+
+- The plugin works offline. There is no account and no hosted sync service.
+- License verification is offline too. Pro does not depend on a subscription backend staying alive.
+- Before you publish a calendar file, decide whether you want note links and source paths embedded in it. You can turn note-linking off before sharing the feed.
+- A subscribed calendar is not instant sync. It is still better than repeated imports, but the calendar provider controls refresh timing.
+
 ## Install
 
 **Community plugins (recommended):** open **Settings → Community plugins**, search **Task Calendar Bridge**, and install it — one click, auto-updates.
@@ -186,10 +200,12 @@ Refresh intervals are set by the calendar provider, not by this plugin. Google r
    - `main.js`
    - `manifest.json`
    - `styles.css`
-3. Enable **Task Calendar Bridge** in Obsidian Settings -> Community plugins.
+3. Enable **Task Calendar Bridge** in Obsidian Settings → Community plugins.
 4. Run `Create sample task note` from the command palette to test it.
 
-## Upgrading to 1.2.0
+## Release and upgrade notes
+
+### Upgrading to 1.2.0
 
 For almost everyone: nothing to do. Event identity is unchanged, so a calendar
 you have already imported or subscribed to keeps updating in place.
@@ -209,13 +225,16 @@ Two exceptions:
   correct local time on its next refresh; the events themselves are the same
   events.
 
-## Upgrading from 1.0.x
+### Upgrading from 1.0.x
 
 1.1.0 changes how events are identified so that editing a note stops creating duplicate calendar entries. Because the identity scheme itself changed, **the first export after upgrading looks like a new set of events to a calendar you previously imported into.** The cleanest path is to delete the calendar you had imported and import (or subscribe to) the new file once. After that, edits update events in place.
 
 Your configured output path is kept as the whole-vault calendar; current-note exports move to their own file so the two can no longer overwrite each other.
 
-## Development
+<details>
+<summary>Developer notes</summary>
+
+### Development
 
 ```bash
 npm install
@@ -223,7 +242,7 @@ npm test
 npm run build
 ```
 
-## Pro license generation
+### Pro license generation
 
 The private signing key lives at `scripts/.license-private.key` and is ignored by git. Keep it backed up and private.
 
@@ -231,4 +250,6 @@ The private signing key lives at `scripts/.license-private.key` and is ignored b
 npm run license:generate -- customer@email.com
 ```
 
-The generated key can be pasted into Settings -> Task Calendar Bridge -> License key.
+The generated key can be pasted into Settings → Task Calendar Bridge → License key.
+
+</details>
