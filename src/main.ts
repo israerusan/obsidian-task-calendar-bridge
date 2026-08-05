@@ -4,27 +4,29 @@ import {
   compareTasks,
   describeAge,
   generateIcsCalendar,
-  isInFolder,
   isSameFile,
   localToday,
   parseTasksFromMarkdown,
   selectUpcoming,
-  splitFolders,
+  shouldIncludeNote,
   validateOutputPath,
+  countSkips,
+  icsSignature,
+  sampleSkips,
   type CalendarTask,
+  type DuplicateIdentity,
+  type ExportReport,
+  type FolderFilter,
   type ParseOptions,
   type ParseResult,
   type SkippedTask,
 } from "./core";
 import { SAMPLE_TASK_NOTE } from "./core/help";
 import { HelpModal } from "./HelpModal";
-import { countSkips, ExportReportModal, type DuplicateIdentity, type ExportReport } from "./ExportReportModal";
+import { ExportReportModal } from "./ExportReportModal";
 import { LicenseManager } from "./license/LicenseManager";
 import { isPublishSupported, publishCalendar, publishedFileExists } from "./publish";
 import { DEFAULT_SETTINGS, TaskCalendarBridgeSettingTab, type TaskCalendarBridgeSettings } from "./settings";
-
-/** How many skip records per reason are kept for display; `counts` carries the real totals. */
-const REPORT_LIMIT_PER_REASON = 25;
 
 interface CacheEntry {
   mtime: number;
@@ -328,7 +330,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         skipped: sampleSkips(collected.skipped),
         publishedTo,
         publishError,
-        isPro: this.settings.isPro,
         freeLimit: FREE_TASK_LIMIT,
       };
       this.lastReport = report;
@@ -525,22 +526,18 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     return published;
   }
 
+  /** The settings, expressed as the filter `shouldIncludeNote` understands. */
+  private folderFilter(): FolderFilter {
+    return {
+      includeFolders: this.settings.includeFolders,
+      excludeFolders: this.settings.excludeFolders,
+      useIncludeFolders: this.settings.isPro,
+      outputPaths: [this.settings.vaultOutputPath, this.settings.currentNoteOutputPath],
+    };
+  }
+
   private shouldIncludeFile(path: string): boolean {
-    if (isSameFile(path, this.settings.vaultOutputPath) || isSameFile(path, this.settings.currentNoteOutputPath)) return false;
-
-    // Exclusions apply whether or not Pro is active. Gating them on isPro made
-    // losing a license *add* content: a user who had excluded Archive and
-    // Templates suddenly found hundreds of old tasks and template placeholders
-    // in their calendar. Turning a paid feature off must never widen the output.
-    const excludes = splitFolders(this.settings.excludeFolders);
-    if (excludes.some((folder) => isInFolder(path, folder))) return false;
-
-    // An include list is a genuine Pro capability, so it lapses with the license.
-    if (!this.settings.isPro) return true;
-    const includes = splitFolders(this.settings.includeFolders);
-    // Boundary matching: "Work" must not also select "Workshop/notes.md".
-    if (includes.length > 0 && !includes.some((folder) => isInFolder(path, folder))) return false;
-    return true;
+    return shouldIncludeNote(path, this.folderFilter());
   }
 
   // --- License and settings --------------------------------------------------
@@ -733,7 +730,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       // persisted, so an upgrade does not show a report with everything at zero.
       counts: last.counts ?? countSkips(last.skipped ?? []),
       publishError: last.publishError,
-      isPro: this.settings.isPro,
       freeLimit: FREE_TASK_LIMIT,
     };
   }
@@ -821,26 +817,4 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * A bounded sample that still has rows for every reason present.
- *
- * The report groups skips by reason and shows a handful of each, so the sample
- * has to be taken per reason: a flat slice of the first N was all "completed" in
- * any real vault, leaving the "Not exported" heading — the entire point of the
- * report — with a count and nothing under it.
- */
-function sampleSkips(skipped: SkippedTask[]): SkippedTask[] {
-  const perReason = new Map<string, SkippedTask[]>();
-  for (const item of skipped) {
-    const bucket = perReason.get(item.reason) ?? [];
-    if (bucket.length < REPORT_LIMIT_PER_REASON) bucket.push(item);
-    perReason.set(item.reason, bucket);
-  }
-  return [...perReason.values()].flat();
-}
-
-/** The calendar's content, minus the one property that changes on every run. */
-function icsSignature(ics: string): string {
-  return ics.replace(/DTSTAMP:[^\r\n]*/g, "");
-}
 

@@ -7,6 +7,7 @@ export * from "./paths";
 export * from "./text";
 export * from "./timezone";
 export * from "./help";
+export * from "./report";
 
 /** The free full-vault cap. A constant, not a setting — a setting is a paywall you can edit. */
 export const FREE_TASK_LIMIT = 25;

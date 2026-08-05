@@ -85,6 +85,41 @@ export function isInFolder(path: string, folder: string): boolean {
   return path === normalized || path.startsWith(`${normalized}/`);
 }
 
+/** Which notes an export covers. Both lists are comma-separated folder names. */
+export interface FolderFilter {
+  includeFolders: string;
+  excludeFolders: string;
+  /** Include lists are a Pro capability; exclusions are not. See below. */
+  useIncludeFolders: boolean;
+  /** The plugin's own output files, which are never inputs. */
+  outputPaths: string[];
+}
+
+/**
+ * Whether a note's tasks belong in the export.
+ *
+ * Used for two different questions that must answer identically: which files the vault walk
+ * reads, and whether a change to a file is worth re-exporting for. When they disagreed, an edit
+ * inside an excluded folder triggered a full re-export that could not change a single byte.
+ */
+export function shouldIncludeNote(path: string, filter: FolderFilter): boolean {
+  if (filter.outputPaths.some((output) => isSameFile(path, output))) return false;
+
+  // Exclusions apply whether or not Pro is active. Gating them on the licence made losing one
+  // *add* content: a user who had excluded Archive and Templates suddenly found hundreds of old
+  // tasks and template placeholders in their calendar. Turning a paid feature off must never
+  // widen the output.
+  const excludes = splitFolders(filter.excludeFolders);
+  if (excludes.some((folder) => isInFolder(path, folder))) return false;
+
+  // An include list is a genuine Pro capability, so it lapses with the licence.
+  if (!filter.useIncludeFolders) return true;
+  const includes = splitFolders(filter.includeFolders);
+  // Boundary matching: "Work" must not also select "Workshop/notes.md".
+  if (includes.length > 0 && !includes.some((folder) => isInFolder(path, folder))) return false;
+  return true;
+}
+
 export function splitFolders(value: string): string[] {
   return value
     .split(",")

@@ -1,58 +1,10 @@
 import { App, MarkdownView, Modal, Setting, TFile } from "obsidian";
-import { SKIP_LABELS, type SkippedTask } from "./core";
+import { isExcludedBySetting, SKIP_LABELS, type ExportReport, type SkippedTask } from "./core";
 import { PURCHASE_URL } from "./settings";
 
-/** A task dropped because another task already claimed the same identity. */
-export interface DuplicateIdentity {
-  sourcePath: string;
-  line: number;
-  title: string;
-}
-
-/**
- * How many tasks fell into each bucket across the WHOLE export.
- *
- * Counted separately from the sample rows below, which are capped: the headings
- * have to state the real totals even when the list shows the first few hundred.
- */
-export interface SkipCounts {
-  /** Did not reach the calendar, and the user did not ask for that. */
-  lost: number;
-  /** Exported, but one field of it could not be read. */
-  warnings: number;
-  /** Left out on purpose by a setting. Working as configured. */
-  excluded: number;
-}
-
-export interface ExportReport {
-  scope: string;
-  path: string;
-  eventCount: number;
-  totalFound: number;
-  capped: number;
-  duplicateIds: DuplicateIdentity[];
-  /** A sample, capped for memory. `counts` holds the real totals. */
-  skipped: SkippedTask[];
-  counts: SkipCounts;
-  publishedTo?: string;
-  publishError?: string;
-  isPro: boolean;
-  freeLimit: number;
-}
-
-/** Excluded on purpose by a setting, rather than lost. */
-const BY_SETTING = new Set(["completed", "cancelled", "repeat-not-enabled", "reminder-not-enabled"]);
-
-/** One pass, three buckets — the classification every surface has to agree on. */
-export function countSkips(skipped: SkippedTask[]): SkipCounts {
-  const counts: SkipCounts = { lost: 0, warnings: 0, excluded: 0 };
-  for (const item of skipped) {
-    if (!item.fatal) BY_SETTING.has(item.reason) ? counts.excluded++ : counts.warnings++;
-    else if (BY_SETTING.has(item.reason)) counts.excluded++;
-    else counts.lost++;
-  }
-  return counts;
-}
+// The report's shape and its counting rules live in src/core/report.ts — the plugin builds
+// these, the settings tab persists them, and this file only renders them.
+export type { DuplicateIdentity, ExportReport, SkipCounts } from "./core";
 
 /**
  * Answers the question 1.0.x never answered: "why isn't my task in the
@@ -118,9 +70,9 @@ export class ExportReportModal extends Modal {
       if (report.duplicateIds.length > 15) list.createEl("li", { text: `…and ${report.duplicateIds.length - 15} more.` });
     }
 
-    const lost = report.skipped.filter((item) => item.fatal && !BY_SETTING.has(item.reason));
-    const warnings = report.skipped.filter((item) => !item.fatal && !BY_SETTING.has(item.reason));
-    const excluded = report.skipped.filter((item) => BY_SETTING.has(item.reason));
+    const lost = report.skipped.filter((item) => item.fatal && !isExcludedBySetting(item.reason));
+    const warnings = report.skipped.filter((item) => !item.fatal && !isExcludedBySetting(item.reason));
+    const excluded = report.skipped.filter((item) => isExcludedBySetting(item.reason));
 
     if (report.counts.lost === 0 && report.counts.warnings === 0) {
       contentEl.createEl("p", { text: "Every dated task was exported." });

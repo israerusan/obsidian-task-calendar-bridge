@@ -39,6 +39,12 @@ const {
   buildVtimezone,
   escapeIcsText,
   localToday,
+  shouldIncludeNote,
+  countSkips,
+  isExcludedBySetting,
+  sampleSkips,
+  icsSignature,
+  REPORT_LIMIT_PER_REASON,
 } = core;
 
 const PRO = { includeCompleted: true, includeRecurrence: true, includeReminders: true };
@@ -1031,6 +1037,98 @@ const ics = (tasks, overrides = {}) => generateIcsCalendar(tasks, { ...ICS_OPTIO
   for (const line of far.split("\r\n")) {
     assert.ok(!/^DTEND;VALUE=DATE:\d{9,}/.test(line), `nine-digit DATE emitted: ${line}`);
   }
+}
+
+// --- Which notes an export covers --------------------------------------------
+
+{
+  // This lived in main.ts, where nothing could reach it. Two of the rules below
+  // are fixes for shipped bugs and neither had a test.
+  const filter = (over = {}) => ({ includeFolders: "", excludeFolders: "", useIncludeFolders: true, outputPaths: [], ...over });
+
+  // The plugin's own output is never an input.
+  assert.equal(shouldIncludeNote("Calendar/tasks.ics", filter({ outputPaths: ["Calendar/tasks.ics"] })), false);
+  // Compared the way the writer compares, so a case difference cannot smuggle it back in.
+  assert.equal(shouldIncludeNote("Calendar/Tasks.ics", filter({ outputPaths: ["calendar/tasks.ics"] })), false);
+
+  // Exclusions apply WITHOUT Pro. Gating them made losing a license *add*
+  // content: every archived task and template placeholder appeared at once.
+  assert.equal(shouldIncludeNote("Archive/2019.md", filter({ excludeFolders: "Archive", useIncludeFolders: false })), false);
+  assert.equal(shouldIncludeNote("Archive/2019.md", filter({ excludeFolders: "Archive", useIncludeFolders: true })), false);
+
+  // An include list is a real Pro capability, so it lapses with the license —
+  // and lapsing must WIDEN nothing that an exclusion had already removed.
+  assert.equal(shouldIncludeNote("Personal/journal.md", filter({ includeFolders: "Work", useIncludeFolders: true })), false);
+  assert.equal(shouldIncludeNote("Personal/journal.md", filter({ includeFolders: "Work", useIncludeFolders: false })), true);
+  assert.equal(
+    shouldIncludeNote("Archive/old.md", filter({ includeFolders: "Work", excludeFolders: "Archive", useIncludeFolders: false })),
+    false,
+    "losing Pro must not resurrect an excluded folder"
+  );
+
+  // Boundary matching, both directions.
+  assert.equal(shouldIncludeNote("Workshop/notes.md", filter({ includeFolders: "Work" })), false, '"Work" must not select "Workshop"');
+  assert.equal(shouldIncludeNote("Work/notes.md", filter({ includeFolders: "Work" })), true);
+  assert.equal(shouldIncludeNote("Archive-old/x.md", filter({ excludeFolders: "Archive" })), true);
+
+  // An empty include list means the whole vault, not nothing.
+  assert.equal(shouldIncludeNote("Anywhere/x.md", filter({ includeFolders: "" })), true);
+  // Exclusion beats inclusion.
+  assert.equal(shouldIncludeNote("Work/Archive/x.md", filter({ includeFolders: "Work", excludeFolders: "Work/Archive" })), false);
+}
+
+// --- Report counting and sampling --------------------------------------------
+
+{
+  const skip = (reason, fatal) => ({ sourcePath: "N.md", line: 1, reason, detail: "", excerpt: "", fatal });
+
+  // Three buckets the notice, the settings line, and the modal all have to agree
+  // on. A vault with 400 completed tasks used to report "Skipped (401)" after a
+  // completely healthy export.
+  const counts = countSkips([
+    skip("no-date", true),
+    skip("invalid-date", true),
+    skip("invalid-time", false),
+    skip("completed", true),
+    skip("cancelled", true),
+    skip("repeat-not-enabled", false),
+    skip("reminder-not-enabled", false),
+  ]);
+  assert.deepEqual(counts, { lost: 2, warnings: 1, excluded: 4 });
+
+  // A Pro-gated drop is "excluded by your settings", not a loss.
+  assert.equal(isExcludedBySetting("repeat-not-enabled"), true);
+  assert.equal(isExcludedBySetting("reminder-not-enabled"), true);
+  assert.equal(isExcludedBySetting("no-date"), false);
+
+  // The sample is taken PER REASON. A flat slice of the first N was all
+  // "completed" in any real vault, so the "Not exported" heading rendered a
+  // count with no rows under it — the one thing the report exists to show.
+  const many = [];
+  for (let i = 0; i < 400; i++) many.push(skip("completed", true));
+  many.push(skip("no-date", true));
+  const sample = sampleSkips(many);
+  assert.ok(sample.some((item) => item.reason === "no-date"), "the rare reason must survive the cap");
+  assert.equal(sample.filter((item) => item.reason === "completed").length, REPORT_LIMIT_PER_REASON);
+  assert.ok(sample.length < many.length);
+  // Sampling must never change the totals the headings state.
+  assert.deepEqual(countSkips(many), { lost: 1, warnings: 0, excluded: 400 });
+}
+
+// --- The write-skip signature ------------------------------------------------
+
+{
+  // Two exports of unchanged tasks differ only in DTSTAMP. Comparing signatures
+  // is what stops an editing session churning every sync client and making all
+  // subscribers re-download an identical calendar.
+  const tasks = parse("- [ ] Ship it [due:: 2026-07-02]").tasks;
+  const first = generateIcsCalendar(tasks, ICS_OPTIONS, new Date("2026-01-01T00:00:00Z")).ics;
+  const later = generateIcsCalendar(tasks, ICS_OPTIONS, new Date("2026-06-15T12:34:56Z")).ics;
+  assert.notEqual(first, later, "the raw files differ, because DTSTAMP moved");
+  assert.equal(icsSignature(first), icsSignature(later), "but nothing that matters changed");
+
+  const changed = generateIcsCalendar(parse("- [ ] Ship it [due:: 2026-07-09]").tasks, ICS_OPTIONS, new Date("2026-01-01T00:00:00Z")).ics;
+  assert.notEqual(icsSignature(first), icsSignature(changed), "a rescheduled task must be seen as a change");
 }
 
 // --- Output-path safety ------------------------------------------------------
