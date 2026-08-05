@@ -410,6 +410,156 @@ const settings = (over = {}) => ({
   }
 }
 
+// --- The lane: one thing at a time, newest request wins -----------------------
+
+{
+  const { TaskLane } = app;
+
+  /** A clock the test drives, so a two-second debounce costs no time at all. */
+  const fakeTimer = () => {
+    let next = 1;
+    const scheduled = new Map();
+    return {
+      port: {
+        set: (fn, ms) => {
+          const id = next++;
+          scheduled.set(id, { fn, ms });
+          return id;
+        },
+        clear: (id) => scheduled.delete(id),
+      },
+      /** Fire everything currently waiting, as the host would after the delay elapses. */
+      tick() {
+        const due = [...scheduled.entries()];
+        scheduled.clear();
+        for (const [, entry] of due) entry.fn();
+      },
+      get count() {
+        return scheduled.size;
+      },
+    };
+  };
+
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  // Repeated requests inside the quiet period collapse to one run.
+  {
+    const timer = fakeTimer();
+    let runs = 0;
+    const lane = new TaskLane({ delayMs: 2000, timer: timer.port, run: async () => void runs++ });
+    lane.schedule();
+    lane.schedule();
+    lane.schedule();
+    assert.equal(timer.count, 1, "each request replaces the last, it does not add one");
+    timer.tick();
+    await settle();
+    assert.equal(runs, 1);
+  }
+
+  // A request made WHILE a run is under way schedules exactly one more, because the edit that
+  // caused it is not in the run already going.
+  {
+    const timer = fakeTimer();
+    const order = [];
+    let release;
+    const blocked = new Promise((resolve) => (release = resolve));
+    let first = true;
+    const lane = new TaskLane({
+      delayMs: 2000,
+      timer: timer.port,
+      run: async () => {
+        order.push("start");
+        if (first) {
+          first = false;
+          await blocked;
+        }
+        order.push("end");
+      },
+    });
+
+    lane.schedule();
+    timer.tick();
+    await settle();
+    assert.deepEqual(order, ["start"], "the first run is in progress");
+
+    // An edit lands mid-run.
+    lane.schedule();
+    release();
+    await settle();
+    timer.tick();
+    await settle();
+    assert.deepEqual(order, ["start", "end", "start", "end"], "the mid-run edit gets its own run");
+  }
+
+  // Runs never overlap, and they finish in the order they were asked for — the property the
+  // export queue exists for. A slow first run must not land after a newer one.
+  {
+    const finished = [];
+    const lane = new TaskLane({ timer: fakeTimer().port, delayMs: 0, run: async () => {} });
+    await Promise.all([
+      lane.enqueue(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        finished.push("slow-first");
+      }),
+      lane.enqueue(async () => {
+        finished.push("fast-second");
+      }),
+    ]);
+    assert.deepEqual(finished, ["slow-first", "fast-second"], "an older run cannot finish last");
+  }
+
+  // One failure must not poison the lane.
+  {
+    const lane = new TaskLane({ timer: fakeTimer().port, delayMs: 0, run: async () => {} });
+    await assert.rejects(() => lane.enqueue(async () => Promise.reject(new Error("boom"))));
+    let ran = false;
+    await lane.enqueue(async () => void (ran = true));
+    assert.equal(ran, true, "the lane still works after a failure");
+  }
+
+  // Cancel drops the pending run — this is what stops a write landing in a vault whose plugin
+  // instance is gone.
+  {
+    const timer = fakeTimer();
+    let runs = 0;
+    const lane = new TaskLane({ delayMs: 2000, timer: timer.port, run: async () => void runs++ });
+    lane.schedule();
+    lane.cancel();
+    timer.tick();
+    await settle();
+    assert.equal(runs, 0);
+    assert.equal(lane.isScheduled, false);
+  }
+
+  // A dead instance neither schedules nor runs.
+  {
+    const timer = fakeTimer();
+    let runs = 0;
+    let living = true;
+    const lane = new TaskLane({ delayMs: 2000, timer: timer.port, alive: () => living, run: async () => void runs++ });
+    lane.schedule();
+    living = false;
+    timer.tick();
+    await settle();
+    assert.equal(runs, 0, "a run that comes due after unload must not execute");
+
+    lane.schedule();
+    assert.equal(timer.count, 0, "and nothing new may be scheduled");
+  }
+
+  // runNow jumps no queue.
+  {
+    const order = [];
+    const lane = new TaskLane({ timer: fakeTimer().port, delayMs: 0, run: async () => void order.push("run") });
+    const queued = lane.enqueue(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push("queued");
+    });
+    await Promise.all([queued, lane.runNow()]);
+    assert.deepEqual(order, ["queued", "run"]);
+  }
+}
+
 fs.unlinkSync(outfile);
 fs.unlinkSync(coreOut);
 console.log("app tests passed");

@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, normalizePath, type Debouncer, debounce } from "obsidian";
+import { Notice, Plugin, TFile, normalizePath } from "obsidian";
 import {
   FREE_TASK_LIMIT,
   compareTasks,
@@ -17,6 +17,7 @@ import {
 } from "./core";
 import {
   buildCalendar,
+  TaskLane,
   CalendarWriter,
   entitlements,
   planReport,
@@ -42,23 +43,13 @@ interface CacheEntry {
 
 export default class TaskCalendarBridgePlugin extends Plugin {
   settings: TaskCalendarBridgeSettings = { ...DEFAULT_SETTINGS };
-  private autoExportDebounced?: Debouncer<[], void>;
-  private saveSettingsDebounced?: Debouncer<[], void>;
-  /** Serialises settings writes so an older snapshot cannot land last. */
-  private saveQueue: Promise<unknown> = Promise.resolve();
+  /** Auto-export: debounced, coalesced, serialised, cancellable — one concept. */
+  private exportLane!: TaskLane;
+  /** Settings writes, on the same terms. Typing a path wrote data.json per keystroke. */
+  private saveLane!: TaskLane;
   private statusBar?: HTMLElement;
   private lastReport: ExportReport | null = null;
   private parseCache = new Map<string, CacheEntry>();
-  /**
-   * Serialises whole exports — collect, generate, write, publish, and record.
-   *
-   * Queuing only the final write was not enough: a slow export that started
-   * first could reach the queue last and put its stale snapshot on disk, then
-   * overwrite the newer run's report and published copy with it.
-   */
-  private exportQueue: Promise<unknown> = Promise.resolve();
-  /** One trailing auto-export is enough; a queue of them is just stale work. */
-  private autoExportQueued = false;
   /** Owns both destinations, and the one rule they share. */
   private writer!: CalendarWriter;
   /** True when data.json exists but could not be read — see loadSettings. */
@@ -94,20 +85,21 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     this.statusBar = this.addStatusBarItem();
     this.renderStatusBar();
 
-    this.autoExportDebounced = debounce(
-      () => {
-        if (this.unloaded) return;
+    // window.* rather than bare timers, so a lane still fires in a popped-out window.
+    const timer = { set: (fn: () => void, ms: number) => window.setTimeout(fn, ms), clear: (handle: unknown) => window.clearTimeout(handle as number) };
+
+    this.exportLane = new TaskLane({
+      timer,
+      delayMs: 2000,
+      alive: () => !this.unloaded,
+      run: async () => {
+        // Checked when the run starts, not when it was scheduled: a licence can lapse in
+        // between, and a lapsed one must not keep exporting on its own.
         if (!this.entitlements().autoExport) return;
-        // Coalesce: while one auto-export is running, further edits need exactly
-        // one follow-up run, not one per edit. Without this a large vault could
-        // spend minutes replaying snapshots that were stale before they started.
-        if (this.autoExportQueued) return;
-        this.autoExportQueued = true;
-        void this.exportVaultTasks(false);
+        await this.vaultExport(false);
       },
-      2000,
-      true
-    );
+    });
+    this.saveLane = new TaskLane({ timer, delayMs: 500, alive: () => !this.unloaded, run: () => this.writeSettings() });
 
     this.addRibbonIcon("calendar-days", "Export tasks in this note to a calendar file", () => void this.exportCurrentNoteTasks(true));
 
@@ -179,12 +171,10 @@ export default class TaskCalendarBridgePlugin extends Plugin {
 
   onunload(): void {
     this.unloaded = true;
-    // Without this the debounce can still fire after the plugin is disabled and
-    // write a calendar file into a vault that no longer has the plugin loaded.
-    this.autoExportDebounced?.cancel();
-    // Same for the settings debounce: a pending write landing after unload would
-    // overwrite whatever a freshly loaded instance had already saved.
-    this.saveSettingsDebounced?.cancel();
+    // Without this a pending run still fires after the plugin is disabled, writing a calendar —
+    // or worse, a settings snapshot — into a vault whose plugin instance is gone.
+    this.exportLane.cancel();
+    this.saveLane.cancel();
     this.parseCache.clear();
     this.writer.forget();
   }
@@ -201,7 +191,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     // invisible space or a decomposed accent used to make the plugin mistake its
     // own output for a user edit.
     if (!this.shouldIncludeFile(path)) return;
-    this.autoExportDebounced?.();
+    this.exportLane.schedule();
   }
 
   // --- Exports ---------------------------------------------------------------
@@ -220,7 +210,17 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   }
 
   async exportVaultTasks(showNotice: boolean): Promise<void> {
-    await this.runExport("whole vault", this.settings.vaultOutputPath, showNotice, async () => {
+    await this.exportLane.enqueue(() => this.vaultExport(showNotice));
+  }
+
+  /**
+   * The vault export itself, NOT queued.
+   *
+   * The lane calls this directly. Going back through `enqueue` from inside a lane task would
+   * make that task wait on the chain it is already the head of — a deadlock, and a silent one.
+   */
+  private vaultExport(showNotice: boolean): Promise<void> {
+    return this.runExportNow("whole vault", this.settings.vaultOutputPath, showNotice, async () => {
       const all: CalendarTask[] = [];
       const skipped: SkippedTask[] = [];
 
@@ -236,20 +236,14 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     });
   }
 
-  /**
-   * Runs one export at a time, in the order they were asked for. Kept on a
-   * settled branch so one failure cannot poison every later export.
-   */
+  /** One export at a time, in the order they were asked for. */
   private async runExport(
     scope: string,
     rawPath: string,
     showNotice: boolean,
     collect: () => Promise<{ tasks: CalendarTask[]; skipped: SkippedTask[]; totalFound: number; capped: number }>
   ): Promise<void> {
-    const run = (): Promise<void> => this.runExportNow(scope, rawPath, showNotice, collect);
-    const next = this.exportQueue.then(run, run);
-    this.exportQueue = next.catch(() => undefined);
-    await next;
+    await this.exportLane.enqueue(() => this.runExportNow(scope, rawPath, showNotice, collect));
   }
 
   private async runExportNow(
@@ -258,9 +252,6 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     showNotice: boolean,
     collect: () => Promise<{ tasks: CalendarTask[]; skipped: SkippedTask[]; totalFound: number; capped: number }>
   ): Promise<void> {
-    // Released here, at the start of the run: an edit made *during* this export
-    // must still schedule the trailing one that picks it up.
-    this.autoExportQueued = false;
     if (this.unloaded) return;
 
     const check = precheckExport({
@@ -587,13 +578,14 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     // Writing defaults over a data.json we could not read is exactly how a paid
     // license key gets destroyed, so nothing is saved until it is fixed.
     if (this.settingsUnreadable) return;
-    // Serialised: `saveData` snapshots the settings synchronously but the writes
-    // complete in whatever order they finish, so two unawaited saves could leave
-    // an older snapshot as the last thing on disk.
-    const run = (): Promise<void> => this.saveData(this.settings);
-    const next = this.saveQueue.then(run, run);
-    this.saveQueue = next.catch(() => undefined);
-    await next;
+    // Serialised: `saveData` snapshots the settings synchronously but the writes complete in
+    // whatever order they finish, so two unawaited saves could leave an older snapshot on disk.
+    await this.saveLane.enqueue(() => this.writeSettings());
+  }
+
+  /** The write itself, with no ordering concerns — the lane owns those. */
+  private writeSettings(): Promise<void> {
+    return this.saveData(this.settings);
   }
 
   /**
@@ -605,13 +597,13 @@ export default class TaskCalendarBridgePlugin extends Plugin {
    * inside the config folder that Obsidian Sync then uploads.
    */
   saveSettingsSoon(): void {
-    this.saveSettingsDebounced ??= debounce(() => void this.saveSettings(), 500, true);
-    this.saveSettingsDebounced();
+    if (this.unloaded || this.settingsUnreadable) return;
+    this.saveLane.schedule();
   }
 
   /** Flushes any pending debounced save. Called when the settings tab closes. */
   async flushSettings(): Promise<void> {
-    this.saveSettingsDebounced?.cancel();
+    this.saveLane.cancel();
     await this.saveSettings();
   }
 
