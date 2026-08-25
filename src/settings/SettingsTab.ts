@@ -66,6 +66,7 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
     this.renderTime(containerEl);
     this.renderPro(containerEl);
     this.renderHelp(containerEl);
+    this.renderFeedback(containerEl);
   }
 
   hide(): void {
@@ -581,5 +582,25 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
       .setName("Last export report")
       .setDesc("See what was exported and why anything was skipped.")
       .addButton((button) => button.setButtonText("Show report").onClick(() => this.plugin.showLastReport()));
+  }
+
+  // --- Feedback --------------------------------------------------------------
+
+  private renderFeedback(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Feedback").setHeading();
+
+    new Setting(containerEl)
+      .setName("Bugs and feature requests")
+      .setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.")
+      .addButton((button) =>
+        button.setButtonText("Report a bug").onClick(() => {
+          window.open("https://github.com/israerusan/obsidian-task-calendar-bridge/issues/new?labels=bug");
+        })
+      )
+      .addButton((button) =>
+        button.setButtonText("Request a feature").onClick(() => {
+          window.open("https://github.com/israerusan/obsidian-task-calendar-bridge/issues/new?labels=enhancement");
+        })
+      );
   }
 }
