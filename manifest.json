@@ -3,8 +3,8 @@
   "name": "Task Calendar Bridge",
   "version": "1.2.1",
   "minAppVersion": "1.5.0",
-  "description": "Export dated Markdown tasks to standards-based ICS calendar files. Pro adds uncapped vault export, auto-export, repeating events, reminders, and folder filters.",
-  "author": "iavil",
+  "description": "Put your dated Markdown tasks on your real calendar, exported as standards-based ICS that Apple Calendar, Google Calendar and Outlook subscribe to.",
+  "author": "Israel Avila",
   "authorUrl": "https://github.com/israerusan",
   "fundingUrl": "https://buymeacoffee.com/vaultspotlight/e/560210",
   "isDesktopOnly": false

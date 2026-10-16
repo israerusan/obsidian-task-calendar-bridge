@@ -19,7 +19,7 @@
     "calendar",
     "ics"
   ],
-  "author": "iavil",
+  "author": "Israel Avila",
   "license": "MIT",
   "type": "module",
   "devDependencies": {
