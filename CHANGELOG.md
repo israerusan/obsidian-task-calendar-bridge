@@ -17,9 +17,11 @@ byte-for-byte what 1.2.1 wrote — and event identity is untouched.
   file holds, in the right sidebar. Days carry a dot per event; repeating tasks
   appear on every day they occur and multi-day events continue across the days
   they span. Click a task to open its line (Ctrl/Cmd-click or middle-click for a
-  new tab; right-click for more). The status at the top says whether the file on
-  disk is **up to date**, **out of date**, or **not exported yet**, by comparing
-  it with what the next export would write. On the free tier, dated tasks past
+  new tab; right-click or the row's `⋯` button for more). The agenda shows the
+  next two weeks, a day you pick, or the month you page to. The status at the top
+  says whether the file on disk is **up to date**, **out of date**, **not
+  exported yet**, or could not be read, by comparing it with what the next export
+  would write — click it to export. On the free tier, dated tasks past
   the 25-task limit are drawn faded rather than hidden, so you can see what the
   file leaves out. Keyboard: arrows move by day and week, Page Up/Down by month,
   Home to today, Enter shows a day. Open it from the ribbon or **Open task
@@ -42,7 +44,7 @@ byte-for-byte what 1.2.1 wrote — and event identity is untouched.
 - **A live example under Time handling** showing the exact `DTSTART` a 09:00
   task is written with in the mode you chose.
 - **Calendar view settings**: week start (language default, Monday, Sunday), ISO
-  week numbers, and whether to draw tasks the file leaves out.
+  week numbers, and whether to draw tasks past the free limit.
 - **Theme variables.** The view's colours derive from your theme; `--tcb-*`
   variables and a Style Settings section let you retune them.
 
@@ -55,6 +57,23 @@ byte-for-byte what 1.2.1 wrote — and event identity is untouched.
   guide, instead of a notice that disappeared after twelve seconds.
 - **Export current note tasks to ICS** only appears in the command palette when a
   Markdown note is open.
+- With auto-export on, closing the settings tab after changing something that
+  shapes the file — the time mode, the calendar name — brings the file up to
+  date straight away, instead of at your next note edit.
+
+### Fixed
+
+- **Exporting now repairs a calendar file that something else changed.** An
+  export skipped rewriting the file whenever your tasks were unchanged, judging
+  only by its own memory of the last write — so a file rewritten by a sync client,
+  by another device, or by hand stayed that way until a task changed. It now
+  checks the file itself. The line-ending and byte-order-mark changes sync tools
+  make are still recognised as the same calendar, so they cause no extra writes.
+- **Vaults of more than 5,000 notes no longer re-read every note on every
+  export.** The parse cache dropped its oldest entries first and held 5,000
+  notes, and the export walks the vault in the same order every time — so in a
+  larger vault each note was dropped just before it was needed again. It now
+  keeps the most recently used notes, and holds 50,000.
 
 ## [1.2.1] - 2026-08-05
 

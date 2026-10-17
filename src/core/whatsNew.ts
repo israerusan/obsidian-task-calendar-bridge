@@ -61,9 +61,12 @@ export function isNewerVersion(candidate: string, than: string): boolean {
   return false;
 }
 
-/** `1.3.0`, `1.10.2` — the only shape this plugin's versions take. */
+/**
+ * `1.3.0`, `1.10.2` — major.minor.patch, the only shape a release of this plugin takes (the
+ * manifest contract test enforces it). Anything else stored — `999`, `1.3.0-beta` — is unknown.
+ */
 export function isReleaseVersion(value: string): boolean {
-  return /^\d+(?:\.\d+)*$/.test(value);
+  return /^\d+\.\d+\.\d+$/.test(value);
 }
 
 /** Notes for every release newer than `seen` and no newer than `current`, newest first. */

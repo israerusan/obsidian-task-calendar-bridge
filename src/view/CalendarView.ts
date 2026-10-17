@@ -179,13 +179,18 @@ export class TaskCalendarView extends ItemView {
     const hadGridFocus = this.gridEl?.contains(this.containerEl.doc.activeElement) ?? false;
     // A background refresh redraws everything; it must not throw away where the reader was.
     const active = this.containerEl.doc.activeElement;
-    const focusKey = active instanceof HTMLElement && this.contentEl.contains(active) ? active.dataset.focusKey : undefined;
+    // instanceOf, not instanceof: in a popped-out window the element belongs to that window's
+    // realm, and a bare instanceof against this one is always false there.
+    const focusKey = active && active.instanceOf(HTMLElement) && this.contentEl.contains(active) ? active.dataset.focusKey : undefined;
     const scrollTop = this.contentEl.scrollTop;
     const { contentEl } = this;
     contentEl.empty();
     this.drawContent(hadGridFocus);
     contentEl.scrollTop = scrollTop;
-    if (focusKey) contentEl.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
+    if (focusKey) {
+      // Matched by value rather than by a selector, so no key ever needs escaping.
+      contentEl.findAll("[data-focus-key]").find((el) => el.dataset.focusKey === focusKey)?.focus();
+    }
   }
 
   private drawContent(hadGridFocus: boolean): void {

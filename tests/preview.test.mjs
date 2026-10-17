@@ -21,7 +21,7 @@ async function load(entry, name) {
 const core = await load("src/core/index.ts", "preview-core");
 const app = await load("src/app/index.ts", "preview-app");
 const { sampleEventLines } = await load("src/app/SampleEvent.ts", "preview-sample");
-const { occurrencesBetween, readRule, monthGrid, isoWeekNumber, shiftMonth, parseTasksFromMarkdown, parseRecurrence, isNewerVersion, notesSince, RELEASE_NOTES, explainTask, identitySource, isTaskLine } = core;
+const { occurrencesBetween, readRule, monthGrid, isoWeekNumber, shiftMonth, parseTasksFromMarkdown, parseRecurrence, isNewerVersion, isReleaseVersion, notesSince, RELEASE_NOTES, explainTask, identitySource, isTaskLine } = core;
 const { buildPreview, entriesByDay, isCalendarCurrent, explainLine, buildDiagnostics, classifyError, entitlements, buildCalendar, selectForExport, SharedResult } = app;
 
 const PRO = { includeCompleted: true, includeRecurrence: true, includeReminders: true };
@@ -292,6 +292,10 @@ const md = (lines) => lines.join("\n");
   assert.deepEqual(notesSince("1.2.1", "1.3.0").map((notes) => notes.version), ["1.3.0"]);
   assert.deepEqual(notesSince("1.3.0", "1.3.0"), []);
   assert.deepEqual(notesSince("0", "1.2.1"), [], "an old build never shows notes from the future");
+
+  // A stored version of any other shape is unknown, not "newer than everything".
+  for (const bad of ["999", "1.3", "1.3.0-beta", "1.3.0.4", "", "v1.3.0"]) assert.equal(isReleaseVersion(bad), false, bad);
+  for (const good of ["1.3.0", "1.10.2", "0.0.1"]) assert.equal(isReleaseVersion(good), true, good);
 }
 
 // --- Explain ----------------------------------------------------------------------------------

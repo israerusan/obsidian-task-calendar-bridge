@@ -132,7 +132,7 @@ The **task calendar** (ribbon icon, or **Open task calendar**) draws the calenda
 - **Click a task to open its line.** Ctrl/Cmd-click or middle-click opens a new tab; right-click to open it to the right, explain its event, or copy its UID.
 - **Free tier:** tasks past the 25-task limit are drawn faded, so you can see what the file leaves out instead of guessing.
 - **Keyboard:** arrow keys move by day and week, Page Up/Down by month, Home to today, Enter shows a day, Escape goes back to upcoming. The `?` button shows the legend.
-- **Settings → Calendar view:** week start (language default, Monday or Sunday), ISO week numbers, and whether to draw tasks outside the file. Colours come from your theme; the `--tcb-*` CSS variables and the Style Settings plugin can retune them.
+- **Settings → Calendar view:** week start (language default, Monday or Sunday), ISO week numbers, and whether to draw tasks past the free limit. Colours come from your theme; the `--tcb-*` CSS variables and the Style Settings plugin can retune them.
 
 ## Free gets you to the first real win
 
