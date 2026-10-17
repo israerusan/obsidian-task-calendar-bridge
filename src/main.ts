@@ -1,9 +1,12 @@
-import { Notice, Plugin, TFile, normalizePath } from "obsidian";
+import { Menu, Notice, Platform, Plugin, TFile, apiVersion, normalizePath, type Editor } from "obsidian";
 import {
   FREE_TASK_LIMIT,
   compareTasks,
   describeAge,
+  isNewerVersion,
+  isTaskLine,
   localToday,
+  notesSince,
   shouldIncludeNote,
   countSkips,
   type CalendarTask,
@@ -14,6 +17,10 @@ import {
 } from "./core";
 import {
   buildCalendar,
+  buildDiagnostics,
+  buildPreview,
+  explainLine,
+  isCalendarCurrent,
   ParseIndex,
   SettingsStore,
   TaskLane,
@@ -24,7 +31,9 @@ import {
   selectForExport,
   summariseExport,
   type CalendarOptions,
+  type CalendarPreview,
   type Entitlements,
+  type PreviewItem,
 } from "./app";
 import { SAMPLE_TASK_NOTE } from "./core/help";
 import { HelpModal } from "./HelpModal";
@@ -32,7 +41,11 @@ import { ExportReportModal } from "./ExportReportModal";
 import { LicenseManager } from "./license/LicenseManager";
 import { isPublishSupported, publishCalendar, publishedFileExists } from "./publish";
 import { TaskCalendarBridgeSettingTab } from "./settings/SettingsTab";
-import type { TaskCalendarBridgeSettings } from "./settings/schema";
+import { PURCHASE_URL, type TaskCalendarBridgeSettings } from "./settings/schema";
+import { CALENDAR_VIEW_TYPE, TaskCalendarView, type CalendarViewHost, type PreviewSnapshot } from "./view/CalendarView";
+import { openTaskSource } from "./ui/openSource";
+import { WhatsNewModal } from "./ui/WhatsNewModal";
+import { ExplainModal } from "./ui/ExplainModal";
 
 export default class TaskCalendarBridgePlugin extends Plugin {
   private store!: SettingsStore;
@@ -48,6 +61,10 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   /** The free-tier upsell belongs in the report, not in every single notice. */
   private capNoticeShown = false;
   private unloaded = false;
+  /** Exports currently running, so the calendar view can say "Updating…" rather than "Out of date". */
+  private exportsRunning = 0;
+  /** The day the calendar views were last drawn for; they redraw when it changes. */
+  private viewDay = localToday();
 
   async onload(): Promise<void> {
     // window.* rather than bare timers, so a lane still fires in a popped-out window.
@@ -112,15 +129,53 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     await this.refreshLicense();
 
     this.statusBar = this.addStatusBarItem();
+    this.statusBar.addClass("mod-clickable");
+    this.registerDomEvent(this.statusBar, "click", (event) => this.showStatusMenu(event));
     this.renderStatusBar();
 
 
-    this.addRibbonIcon("calendar-days", "Export tasks in this note to a calendar file", () => void this.exportCurrentNoteTasks(true));
+    this.registerView(CALENDAR_VIEW_TYPE, (leaf) => new TaskCalendarView(leaf, this.viewHost()));
+    this.addRibbonIcon("calendar-days", "Open task calendar", () => void this.openCalendarView());
+
+    this.addCommand({
+      id: "open-calendar-view",
+      name: "Open task calendar",
+      callback: () => void this.openCalendarView(),
+    });
 
     this.addCommand({
       id: "export-current-note-tasks",
       name: "Export current note tasks to ICS",
-      callback: () => void this.exportCurrentNoteTasks(true),
+      // Offered only where it can work, rather than offered everywhere and then refusing.
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file || file.extension !== "md") return false;
+        if (!checking) void this.exportNoteTasks(file, true);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "explain-task-event",
+      name: "Explain this task's calendar event",
+      editorCheckCallback: (checking, editor, ctx) => {
+        const file = ctx.file;
+        if (!file || !isTaskLine(editor.getLine(editor.getCursor().line))) return false;
+        if (!checking) void this.explainEditorLine(editor, file);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "show-whats-new",
+      name: "Show what's new",
+      callback: () => this.showWhatsNew(),
+    });
+
+    this.addCommand({
+      id: "copy-diagnostics",
+      name: "Copy diagnostics for a bug report",
+      callback: () => void this.copyDiagnostics(),
     });
 
     this.addCommand({
@@ -163,9 +218,50 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       })
     );
 
+    // Export one note from wherever notes are listed, not only from the active editor.
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        if (!(file instanceof TFile) || file.extension !== "md") return;
+        menu.addItem((item) =>
+          item
+            .setTitle("Export tasks to calendar file")
+            .setIcon("calendar-days")
+            .onClick(() => void this.exportNoteTasks(file, true))
+        );
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor, info) => {
+        const file = info.file;
+        if (!file || !isTaskLine(editor.getLine(editor.getCursor().line))) return;
+        menu.addItem((item) =>
+          item
+            .setTitle("Explain calendar event")
+            .setIcon("calendar-search")
+            .onClick(() => void this.explainEditorLine(editor, file))
+        );
+      })
+    );
+
+    // A calendar view left open overnight must move "today" with the clock.
+    this.registerInterval(
+      window.setInterval(() => {
+        const today = localToday();
+        if (today === this.viewDay) return;
+        this.viewDay = today;
+        this.refreshCalendarViews();
+      }, 60_000)
+    );
+
     this.addSettingTab(new TaskCalendarBridgeSettingTab(this.app, this));
 
-    this.showFirstRunGuidance();
+    this.app.workspace.onLayoutReady(() => {
+      if (this.unloaded) return;
+      // Release notes are decided before first-run guidance marks the vault as onboarded: a
+      // vault that was never onboarded is a fresh install, and a fresh install has nothing new.
+      this.checkForUpdateNotes();
+      this.showFirstRunGuidance();
+    });
   }
 
   /**
@@ -177,10 +273,55 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     if (this.settings.hasOnboarded || this.settingsUnreadable) return;
     this.settings.hasOnboarded = true;
     void this.saveSettings();
-    new Notice(
-      "Task Calendar Bridge is ready. Run “Export vault tasks to ICS” from the command palette, or open Settings → Task Calendar Bridge for a sample note and the calendar setup guide.",
-      12000
-    );
+    // The calendar view is the onboarding: with no dated tasks it shows the three steps and a
+    // button for each. Opened in the sidebar without taking focus from whatever is being read.
+    void this.openCalendarView(false);
+    new Notice("Task Calendar Bridge is ready. Its calendar is in the right sidebar, with a sample note to start from.", 10000);
+  }
+
+  /**
+   * Release notes, once per update.
+   *
+   * Never on a fresh install and never on a downgrade, and the stored version only ever moves
+   * forward, so going back a version and returning does not replay notes already read.
+   */
+  private checkForUpdateNotes(): void {
+    if (this.settingsUnreadable) return;
+    const current = this.manifest.version;
+    const seen = this.settings.lastSeenVersion;
+    if (seen && !isNewerVersion(current, seen)) return;
+
+    // Installs from before this setting existed have no stored version. One that was already
+    // onboarded is an upgrade, so it gets this release's notes; one that was not is brand new.
+    const upgrading = seen ? true : this.settings.hasOnboarded;
+    const notes = notesSince(seen || "0", current).filter((release) => release.showOnUpdate !== false);
+    this.settings.lastSeenVersion = current;
+    void this.saveSettings();
+
+    if (!upgrading || !this.settings.showReleaseNotes) return;
+    // From an unknown version, only the newest notes: a long backlog is a wall of text.
+    const shown = seen ? notes : notes.slice(0, 1);
+    if (shown.length > 0) this.openWhatsNew(shown);
+  }
+
+  showWhatsNew(): void {
+    const notes = notesSince("0", this.manifest.version);
+    if (notes.length === 0) {
+      new Notice("No release notes are bundled with this version.");
+      return;
+    }
+    this.openWhatsNew(notes.slice(0, 1));
+  }
+
+  private openWhatsNew(notes: ReturnType<typeof notesSince>): void {
+    new WhatsNewModal(this.app, notes, {
+      showOnUpdate: this.settings.showReleaseNotes,
+      setShowOnUpdate: (value) => {
+        this.settings.showReleaseNotes = value;
+        void this.saveSettings();
+      },
+      openCalendar: () => void this.openCalendarView(),
+    }).open();
   }
 
   onunload(): void {
@@ -206,6 +347,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     // own output for a user edit.
     if (!this.shouldIncludeFile(path)) return;
     this.exportLane.schedule();
+    this.refreshCalendarViews();
   }
 
   // --- Exports ---------------------------------------------------------------
@@ -216,7 +358,11 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       new Notice("Open a Markdown note before exporting its tasks.");
       return;
     }
+    await this.exportNoteTasks(file, showNotice);
+  }
 
+  /** One note's tasks to the current-note file, from the editor, the file list, or the view. */
+  async exportNoteTasks(file: TFile, showNotice: boolean): Promise<void> {
     await this.runExport("current note", this.settings.currentNoteOutputPath, showNotice, async () => {
       const result = await this.notes.parse({ path: file.path, mtime: file.stat.mtime }, this.parseOptions());
       return { tasks: [...result.tasks].sort(compareTasks), skipped: result.skipped, totalFound: result.tasks.length, capped: 0 };
@@ -235,19 +381,29 @@ export default class TaskCalendarBridgePlugin extends Plugin {
    */
   private vaultExport(showNotice: boolean): Promise<void> {
     return this.runExportNow("whole vault", this.settings.vaultOutputPath, showNotice, async () => {
-      const all: CalendarTask[] = [];
-      const skipped: SkippedTask[] = [];
-
-      for (const file of this.app.vault.getMarkdownFiles()) {
-        if (!this.shouldIncludeFile(file.path)) continue;
-        const result = await this.notes.parse({ path: file.path, mtime: file.stat.mtime }, this.parseOptions());
-        all.push(...result.tasks);
-        skipped.push(...result.skipped);
-      }
-
-      const selected = selectForExport(all, this.entitlements(), localToday());
+      const { tasks, skipped } = await this.collectVaultTasks();
+      const selected = selectForExport(tasks, this.entitlements(), localToday());
       return { ...selected, skipped };
     });
+  }
+
+  /**
+   * Every task the whole-vault export reads, before the free cap.
+   *
+   * One walk for both the export and the calendar view, so the view cannot disagree with the
+   * file about which notes count.
+   */
+  private async collectVaultTasks(): Promise<{ tasks: CalendarTask[]; skipped: SkippedTask[] }> {
+    const tasks: CalendarTask[] = [];
+    const skipped: SkippedTask[] = [];
+    const options = this.parseOptions();
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      if (!this.shouldIncludeFile(file.path)) continue;
+      const result = await this.notes.parse({ path: file.path, mtime: file.stat.mtime }, options);
+      tasks.push(...result.tasks);
+      skipped.push(...result.skipped);
+    }
+    return { tasks, skipped };
   }
 
   /** One export at a time, in the order they were asked for. */
@@ -267,7 +423,22 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     collect: () => Promise<{ tasks: CalendarTask[]; skipped: SkippedTask[]; totalFound: number; capped: number }>
   ): Promise<void> {
     if (this.unloaded) return;
+    this.exportsRunning++;
+    this.refreshCalendarViews();
+    try {
+      await this.runExportSteps(scope, rawPath, showNotice, collect);
+    } finally {
+      this.exportsRunning--;
+      this.refreshCalendarViews();
+    }
+  }
 
+  private async runExportSteps(
+    scope: string,
+    rawPath: string,
+    showNotice: boolean,
+    collect: () => Promise<{ tasks: CalendarTask[]; skipped: SkippedTask[]; totalFound: number; capped: number }>
+  ): Promise<void> {
     const check = precheckExport({
       settingsUnreadable: this.settingsUnreadable,
       dataPath: this.dataPath(),
@@ -400,12 +571,16 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     return normalizePath(`${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/data.json`);
   }
 
-  saveSettings(): Promise<void> {
-    return this.store.save();
+  async saveSettings(): Promise<void> {
+    await this.store.save();
+    // Most settings change what the calendar view shows: the time mode, the folder filters,
+    // a Pro toggle that turns repeats on.
+    this.refreshCalendarViews();
   }
 
   saveSettingsSoon(): void {
     this.store.saveSoon();
+    this.refreshCalendarViews();
   }
 
   flushSettings(): Promise<void> {
@@ -570,6 +745,179 @@ export default class TaskCalendarBridgePlugin extends Plugin {
 
   openImportGuide(): void {
     new HelpModal(this.app).open();
+  }
+
+  // --- Calendar view -----------------------------------------------------------
+
+  /**
+   * The view's half of the plugin, as a narrow object.
+   *
+   * The view holds this rather than the plugin, and the plugin never holds the view: Obsidian
+   * owns view instances and can recreate them at any time, so a stored reference goes stale.
+   */
+  private viewHost(): CalendarViewHost {
+    // Read through, not captured: the store can replace its settings object.
+    const live = (): TaskCalendarBridgeSettings => this.settings;
+    return {
+      get settings() {
+        return live();
+      },
+      previewSnapshot: () => this.previewSnapshot(),
+      exportVaultTasks: (showNotice) => this.exportVaultTasks(showNotice),
+      exportActiveNote: () => this.exportCurrentNoteTasks(true),
+      showLastReport: () => this.showLastReport(),
+      openImportGuide: () => this.openImportGuide(),
+      createSampleTaskNote: () => this.createSampleTaskNote(),
+      openSettings: () => this.openSettings(),
+      saveSettings: () => this.saveSettings(),
+      openTask: (item, newLeaf) => this.openTask(item, newLeaf),
+      explainTask: (item) => void this.explainItem(item),
+      purchaseUrl: PURCHASE_URL,
+    };
+  }
+
+  async openCalendarView(focus = true): Promise<void> {
+    const existing = this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)[0];
+    if (existing) {
+      if (focus) await this.app.workspace.revealLeaf(existing);
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (!leaf) return;
+    await leaf.setViewState({ type: CALENDAR_VIEW_TYPE, active: focus });
+    if (focus) await this.app.workspace.revealLeaf(leaf);
+  }
+
+  refreshCalendarViews(): void {
+    if (this.unloaded) return;
+    for (const leaf of this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)) {
+      // A deferred leaf (a background tab not yet shown) holds a placeholder, not the view.
+      if (leaf.view instanceof TaskCalendarView) leaf.view.scheduleRefresh();
+    }
+  }
+
+  private async computePreview(): Promise<CalendarPreview> {
+    const { tasks, skipped } = await this.collectVaultTasks();
+    return buildPreview({
+      tasks,
+      skipped,
+      rights: this.entitlements(),
+      today: localToday(),
+      options: this.calendarOptions(),
+      vaultName: this.app.vault.getName(),
+      now: new Date(),
+    });
+  }
+
+  private async previewSnapshot(): Promise<PreviewSnapshot> {
+    const preview = await this.computePreview();
+    const path = normalizePath(this.settings.vaultOutputPath);
+    let contents: string | null = null;
+    try {
+      if (await this.app.vault.adapter.exists(path)) contents = await this.app.vault.adapter.read(path);
+    } catch {
+      // Unreadable reads as missing: the next export rewrites it either way.
+    }
+    return {
+      preview,
+      file: contents === null ? "missing" : isCalendarCurrent(preview, contents) ? "current" : "stale",
+      path,
+      today: localToday(),
+      busy: this.exportsRunning > 0 || (this.entitlements().autoExport && this.exportLane.isScheduled),
+      lastExport: this.settings.lastExport,
+    };
+  }
+
+  private async openTask(item: PreviewItem, newLeaf: boolean | "tab" | "split" | "window"): Promise<void> {
+    const opened = await openTaskSource(this.app, item.task.sourcePath, item.task.line, newLeaf);
+    if (!opened) new Notice(`${item.task.sourcePath} is no longer in this vault.`);
+  }
+
+  private openSettings(): void {
+    // Not in the public API, but stable for years and used widely; feature-detected so a change
+    // degrades to a notice rather than an exception.
+    const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+    if (!setting) {
+      new Notice("Open Settings → Task Calendar Bridge.");
+      return;
+    }
+    setting.open();
+    setting.openTabById(this.manifest.id);
+  }
+
+  // --- Explain ---------------------------------------------------------------
+
+  private async explainEditorLine(editor: Editor, file: TFile): Promise<void> {
+    await this.explainAt(file.path, editor.getValue(), editor.getCursor().line + 1);
+  }
+
+  private async explainItem(item: PreviewItem): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(item.task.sourcePath);
+    if (!(file instanceof TFile)) return;
+    await this.explainAt(file.path, await this.app.vault.cachedRead(file), item.task.line);
+  }
+
+  /**
+   * Explains one line from text the caller supplies: the editor's live buffer when asked from
+   * the editor, so an edit made a second ago is what gets explained, not the last saved copy.
+   */
+  private async explainAt(path: string, markdown: string, line: number): Promise<void> {
+    const inVaultScope = this.shouldIncludeFile(path);
+    let preview: CalendarPreview | null = null;
+    if (inVaultScope) {
+      try {
+        preview = await this.computePreview();
+      } catch {
+        // Without the vault picture the verdict is about this line alone; still worth showing.
+      }
+    }
+    const states = new Map<string, PreviewItem["state"]>();
+    for (const item of preview?.items ?? []) states.set(`${item.task.sourcePath}\n${item.task.line}`, item.state);
+
+    const explanation = explainLine({
+      markdown,
+      sourcePath: path,
+      line,
+      parseOptions: this.parseOptions(),
+      explainOptions: {
+        defaultDurationMinutes: this.settings.defaultDurationMinutes,
+        allDayReminderTime: this.settings.allDayReminderTime,
+        timeMode: this.settings.timeMode,
+        timeZone: this.settings.timeZone,
+        exportTags: this.settings.exportTags,
+      },
+      inVaultScope,
+      vaultState: preview ? (sourcePath, taskLine) => states.get(`${sourcePath}\n${taskLine}`) : undefined,
+      freeLimit: FREE_TASK_LIMIT,
+    });
+    new ExplainModal(this.app, explanation).open();
+  }
+
+  // --- Support -----------------------------------------------------------------
+
+  async copyDiagnostics(): Promise<void> {
+    const text = buildDiagnostics({
+      pluginVersion: this.manifest.version,
+      obsidianVersion: apiVersion,
+      platform: Platform.isMobile ? (Platform.isIosApp ? "iOS" : Platform.isAndroidApp ? "Android" : "mobile") : Platform.isMacOS ? "macOS" : Platform.isWin ? "Windows" : Platform.isLinux ? "Linux" : "desktop",
+      settings: this.settings,
+      publishSupported: isPublishSupported(),
+    });
+    try {
+      await navigator.clipboard.writeText(text);
+      new Notice("Diagnostics copied. They hold settings and counts only: no task text, note names, or licence key.");
+    } catch {
+      new Notice(text, 0);
+    }
+  }
+
+  private showStatusMenu(event: MouseEvent): void {
+    const menu = new Menu();
+    menu.addItem((item) => item.setTitle("Open task calendar").setIcon("calendar-days").onClick(() => void this.openCalendarView()));
+    menu.addItem((item) => item.setTitle("Export the vault calendar").setIcon("refresh-cw").onClick(() => void this.exportVaultTasks(true)));
+    menu.addItem((item) => item.setTitle("Show last export report").setIcon("list-checks").onClick(() => this.showLastReport()));
+    menu.addItem((item) => item.setTitle("Copy calendar file path").setIcon("copy").onClick(() => void this.copyOutputPath()));
+    menu.showAtMouseEvent(event);
   }
 
   async createSampleTaskNote(): Promise<void> {

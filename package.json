@@ -1,6 +1,6 @@
 {
   "name": "obsidian-task-calendar-bridge",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Bridge Obsidian tasks with calendar apps through ICS export and Pro automation.",
   "main": "main.js",
   "scripts": {
@@ -10,7 +10,7 @@
     "test": "npm run lint && npm run test:unit",
     "test:ci": "npm run test:unit",
     "license:generate": "node scripts/generate-license.mjs",
-    "test:unit": "node tests/seam.test.mjs && node tests/manifest-contract.test.mjs && node tests/core.test.mjs && node tests/app.test.mjs && node tests/help.test.mjs && node tests/license.test.mjs"
+    "test:unit": "node tests/seam.test.mjs && node tests/manifest-contract.test.mjs && node tests/core.test.mjs && node tests/app.test.mjs && node tests/preview.test.mjs && node tests/help.test.mjs && node tests/license.test.mjs"
   },
   "keywords": [
     "obsidian",

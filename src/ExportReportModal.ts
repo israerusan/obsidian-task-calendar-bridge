@@ -1,6 +1,7 @@
-import { App, MarkdownView, Modal, Setting, TFile } from "obsidian";
+import { App, Keymap, Modal, Setting } from "obsidian";
 import { isExcludedBySetting, SKIP_LABELS, type ExportReport, type SkippedTask } from "./core";
 import { PURCHASE_URL } from "./settings/schema";
+import { openTaskSource } from "./ui/openSource";
 
 // The report's shape and its counting rules live in src/core/report.ts — the plugin builds
 // these, the settings tab persists them, and this file only renders them.
@@ -128,22 +129,10 @@ export class ExportReportModal extends Modal {
     link.setAttr("aria-label", `Open ${sourcePath} at line ${line}`);
     link.addEventListener("click", (event: MouseEvent) => {
       event.preventDefault();
-      void this.jumpTo(sourcePath, line);
+      this.close();
+      void openTaskSource(this.app, sourcePath, line, Keymap.isModEvent(event));
     });
     row.createSpan({ text: detail });
-  }
-
-  private async jumpTo(sourcePath: string, line: number): Promise<void> {
-    const file = this.app.vault.getAbstractFileByPath(sourcePath);
-    if (!(file instanceof TFile)) return;
-    this.close();
-    const leaf = this.app.workspace.getLeaf(false);
-    await leaf.openFile(file);
-    const view = leaf.view;
-    if (!(view instanceof MarkdownView)) return;
-    const target = { line: Math.max(0, line - 1), ch: 0 };
-    view.editor.setCursor(target);
-    view.editor.scrollIntoView({ from: target, to: target }, true);
   }
 
   private error(host: HTMLElement, message: string): void {

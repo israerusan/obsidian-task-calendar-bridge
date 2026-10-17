@@ -46,3 +46,507 @@
 .task-calendar-bridge-help code {
   font-size: var(--font-smaller);
 }
+
+/* --- Live example in settings ------------------------------------------- */
+
+.task-calendar-bridge-sample {
+  margin: var(--size-4-1) 0 0;
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary);
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+/* --- Task calendar view --------------------------------------------------
+ *
+ * Every colour is derived from the theme's own variables, so the view looks native in any theme
+ * without a single override. Themes and the Style Settings plugin can retune it through the
+ * --tcb-* variables below.
+ */
+
+/* @settings
+
+name: Task Calendar Bridge
+id: task-calendar-bridge
+settings:
+    -
+        id: tcb-dot-color
+        title: Event dot
+        description: Days with an event in the calendar file.
+        type: variable-color
+        format: hex
+        default: "#7c6cf2"
+    -
+        id: tcb-today-color
+        title: Today highlight
+        type: variable-color
+        format: hex
+        default: "#7c6cf2"
+    -
+        id: tcb-weekend-background
+        title: Weekend background
+        type: variable-color
+        format: rgb
+        opacity: true
+        default: "rgba(0, 0, 0, 0)"
+    -
+        id: tcb-day-size
+        title: Day cell height
+        type: variable-number-slider
+        default: 34
+        min: 24
+        max: 56
+        step: 2
+        format: px
+*/
+
+body {
+  --tcb-dot-color: var(--interactive-accent);
+  --tcb-dot-faded: var(--text-faint);
+  --tcb-dot-warning: var(--text-warning);
+  --tcb-today-color: var(--interactive-accent);
+  --tcb-selected-background: var(--background-modifier-active-hover);
+  --tcb-weekend-background: transparent;
+  --tcb-day-size: 34px;
+  --tcb-current: var(--color-green);
+  --tcb-stale: var(--color-orange);
+  --tcb-error: var(--text-error);
+}
+
+.tcb-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-3);
+  padding: var(--size-4-2) var(--size-4-3) var(--size-4-4);
+  font-size: var(--font-ui-small);
+}
+
+.tcb-muted {
+  color: var(--text-muted);
+}
+
+.tcb-pad {
+  padding: var(--size-4-2) 0;
+}
+
+/* Status: is the file on disk what the next export would write? */
+
+.tcb-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+}
+
+.tcb-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  min-width: 0;
+  padding: 2px var(--size-4-2);
+  border-radius: var(--radius-l);
+  background-color: var(--background-secondary);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.tcb-pill-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--text-faint);
+}
+
+.tcb-pill-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tcb-pill.is-current .tcb-pill-dot {
+  background-color: var(--tcb-current);
+}
+
+.tcb-pill.is-stale .tcb-pill-dot {
+  background-color: var(--tcb-stale);
+}
+
+.tcb-pill.is-error .tcb-pill-dot {
+  background-color: var(--tcb-error);
+}
+
+.tcb-pill.is-error {
+  color: var(--tcb-error);
+}
+
+.tcb-pill.is-busy .tcb-pill-dot {
+  background-color: var(--interactive-accent);
+  animation: tcb-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tcb-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tcb-pill.is-busy .tcb-pill-dot {
+    animation: none;
+  }
+}
+
+.tcb-actions,
+.tcb-nav-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
+.tcb-note {
+  padding: var(--size-4-1) var(--size-4-2);
+  border-left: 2px solid var(--interactive-accent);
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary);
+  color: var(--text-muted);
+}
+
+.tcb-note.is-warning {
+  border-left-color: var(--text-warning);
+}
+
+/* Month grid */
+
+.tcb-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tcb-nav-title {
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.tcb-today-button {
+  padding: 0 var(--size-4-2);
+  height: var(--input-height);
+  font-size: var(--font-ui-smaller);
+}
+
+.tcb-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tcb-grid-row {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.tcb-grid.has-week-numbers .tcb-grid-row {
+  grid-template-columns: 2em repeat(7, minmax(0, 1fr));
+}
+
+.tcb-weekday,
+.tcb-weeknum {
+  text-align: center;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+
+.tcb-weeknum {
+  align-self: center;
+}
+
+.tcb-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+  min-height: var(--tcb-day-size);
+  padding: 3px 0 2px;
+  border-radius: var(--radius-s);
+  cursor: var(--cursor);
+  color: var(--text-normal);
+}
+
+.tcb-day.is-weekend {
+  background-color: var(--tcb-weekend-background);
+}
+
+.tcb-day:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.tcb-day:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+
+.tcb-day.is-outside {
+  color: var(--text-faint);
+}
+
+.tcb-day.is-selected {
+  background-color: var(--tcb-selected-background);
+}
+
+.tcb-day-number {
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  min-width: 1.6em;
+  text-align: center;
+  border-radius: var(--radius-s);
+}
+
+.tcb-day.is-today .tcb-day-number {
+  background-color: var(--tcb-today-color);
+  color: var(--text-on-accent);
+  font-weight: var(--font-semibold);
+}
+
+.tcb-dots {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 6px;
+}
+
+.tcb-dot {
+  display: inline-block;
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: var(--tcb-dot-color);
+}
+
+.tcb-dot.is-capped {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--tcb-dot-faded);
+}
+
+.tcb-dot.is-duplicate {
+  background-color: var(--tcb-dot-warning);
+}
+
+.tcb-dot.is-continuation {
+  width: 8px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.tcb-more {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-faint);
+}
+
+/* Agenda */
+
+.tcb-agenda-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+  padding-bottom: var(--size-4-1);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.tcb-agenda-title {
+  font-weight: var(--font-semibold);
+}
+
+.tcb-link {
+  font-size: var(--font-ui-smaller);
+}
+
+.tcb-agenda-day {
+  margin-top: var(--size-4-2);
+}
+
+.tcb-agenda-date {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tcb-entries {
+  margin: var(--size-4-1) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tcb-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1);
+  border-radius: var(--radius-s);
+  cursor: var(--cursor);
+}
+
+.tcb-entry:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.tcb-entry:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+
+.tcb-entry.is-capped,
+.tcb-entry.is-duplicate {
+  opacity: 0.6;
+}
+
+.tcb-entry-time {
+  flex: none;
+  width: 4em;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tcb-entry-body {
+  min-width: 0;
+}
+
+.tcb-entry-title {
+  color: var(--text-normal);
+  overflow-wrap: anywhere;
+}
+
+.tcb-entry-title.is-done {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.tcb-entry-title.is-cancelled {
+  text-decoration: line-through;
+  color: var(--text-faint);
+}
+
+.tcb-entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-4-1);
+  margin-top: 1px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.tcb-badge-icon {
+  display: inline-flex;
+}
+
+.tcb-badge-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.tcb-tag {
+  color: var(--tag-color);
+}
+
+.tcb-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.tcb-footer {
+  font-size: var(--font-ui-smaller);
+}
+
+/* First run: the empty state is the onboarding. */
+
+.tcb-empty {
+  padding: var(--size-4-3);
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: var(--radius-m);
+}
+
+.tcb-empty h4 {
+  margin: 0 0 var(--size-4-2);
+}
+
+.tcb-empty code {
+  display: block;
+  margin: var(--size-4-1) 0;
+  font-size: var(--font-smaller);
+}
+
+.tcb-empty ol {
+  padding-left: var(--size-4-5);
+  color: var(--text-muted);
+}
+
+.tcb-empty-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+}
+
+/* Modals */
+
+.tcb-legend ul,
+.tcb-whats-new ul {
+  padding-left: var(--size-4-5);
+}
+
+.tcb-legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.tcb-highlights li {
+  margin-bottom: var(--size-4-2);
+}
+
+.tcb-highlights p {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+}
+
+.tcb-explain-source {
+  display: block;
+  padding: var(--size-4-2);
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary);
+  font-size: var(--font-smaller);
+  overflow-wrap: anywhere;
+}
+
+.tcb-explain-headline {
+  font-weight: var(--font-semibold);
+}
+
+.tcb-explain-rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--size-4-1) var(--size-4-3);
+}
+
+.tcb-explain-rows dt {
+  color: var(--text-muted);
+}
+
+.tcb-explain-rows dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}

@@ -66,7 +66,18 @@ export interface TaskCalendarBridgeSettings {
   /** Paths this plugin created, so it never overwrites a file it does not own. */
   ownedPaths: string[];
   hasOnboarded: boolean;
+  /** Which day the calendar view's weeks start on. `locale` follows Obsidian's language. */
+  weekStart: WeekStart;
+  showWeekNumbers: boolean;
+  /** Whether the calendar view also draws dated tasks the file leaves out (the free cap). */
+  previewShowCapped: boolean;
+  /** Show the "What's new" notes once after an update. */
+  showReleaseNotes: boolean;
+  /** The newest release whose notes this vault has been shown. Empty until the first load. */
+  lastSeenVersion: string;
 }
+
+export type WeekStart = "locale" | "monday" | "sunday";
 
 export const DEFAULT_SETTINGS: TaskCalendarBridgeSettings = {
   licenseKey: "",
@@ -95,6 +106,11 @@ export const DEFAULT_SETTINGS: TaskCalendarBridgeSettings = {
   lastExport: null,
   ownedPaths: [],
   hasOnboarded: false,
+  weekStart: "locale",
+  showWeekNumbers: false,
+  previewShowCapped: true,
+  showReleaseNotes: true,
+  lastSeenVersion: "",
 };
 
 /** Pro-gated settings, by the control that edits them. */
@@ -109,6 +125,8 @@ export type ProTextKey = "includeFolders" | "excludeFolders" | "publishPath";
  */
 export interface PluginHost {
   settings: TaskCalendarBridgeSettings;
+  /** Structural, so this file still imports nothing from `obsidian`. */
+  manifest: { id: string; version: string };
   /** True when data.json exists but could not be read, so nothing may be saved. */
   settingsUnreadable: boolean;
   dataPath(): string;
@@ -120,4 +138,9 @@ export interface PluginHost {
   openImportGuide(): void;
   createSampleTaskNote(): Promise<void>;
   showLastReport(): void;
+  openCalendarView(): Promise<void>;
+  showWhatsNew(): void;
+  copyDiagnostics(): Promise<void>;
+  /** Redraws any open calendar view after a setting that changes what it shows. */
+  refreshCalendarViews(): void;
 }

@@ -4,9 +4,11 @@ import {
   FREE_TASK_LIMIT,
   isSameFile,
   isValidTimeZone,
+  localToday,
   normalizeTime,
   validateOutputPath,
 } from "../core";
+import { sampleEventLines } from "../app/SampleEvent";
 import { LicenseManager } from "../license/LicenseManager";
 import { isAbsolutePath, isPublishSupported } from "../publish";
 import {
@@ -15,6 +17,7 @@ import {
   type PluginHost,
   type ProTextKey,
   type ProToggleKey,
+  type WeekStart,
 } from "./schema";
 
 // The schema, the persisted record and the purchase URL live in ./schema. This file only
@@ -48,6 +51,8 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
   private licenseRejected = "";
   /** Blur-committed fields, so closing the tab commits them too. */
   private pendingCommits: Array<() => void> = [];
+  /** The live example of how a timed event is written. */
+  private sampleEl: HTMLElement | null = null;
 
   constructor(app: App, plugin: Plugin & PluginHost) {
     super(app, plugin);
@@ -64,9 +69,11 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
     this.renderLicense(containerEl);
     this.renderExport(containerEl);
     this.renderTime(containerEl);
+    this.renderView(containerEl);
     this.renderPro(containerEl);
     this.renderHelp(containerEl);
     this.renderFeedback(containerEl);
+    this.renderAbout(containerEl);
   }
 
   hide(): void {
@@ -240,6 +247,7 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
       },
       apply: (value) => {
         this.plugin.settings.defaultDurationMinutes = Number(value);
+        this.renderSample();
       },
     });
 
@@ -370,9 +378,17 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
               }
               this.plugin.settings.timeZone = zone;
               this.plugin.saveSettingsSoon();
+              this.renderSample();
             })
         );
     }
+
+    // What the choice above actually produces, from the real exporter.
+    const sample = new Setting(containerEl)
+      .setName("Example")
+      .setDesc("A task at 09:00 tomorrow is written to the calendar file as:");
+    this.sampleEl = sample.descEl.createEl("pre", { cls: "task-calendar-bridge-sample" });
+    this.renderSample();
 
     this.validatedText(containerEl, {
       name: "All-day reminder time",
@@ -390,6 +406,71 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
         this.plugin.settings.allDayReminderTime = value;
       },
     });
+  }
+
+  private renderSample(): void {
+    if (!this.sampleEl) return;
+    const s = this.plugin.settings;
+    const lines = sampleEventLines(
+      {
+        calendarName: s.calendarName,
+        defaultDurationMinutes: s.defaultDurationMinutes,
+        timeMode: s.timeMode,
+        timeZone: s.timeZone,
+        allDayReminderTime: s.allDayReminderTime,
+        exportTags: s.exportTags,
+        linkToSource: s.linkToSource,
+      },
+      localToday(),
+      new Date()
+    );
+    this.sampleEl.setText(lines.join("\n"));
+  }
+
+  // --- Calendar view -----------------------------------------------------------
+
+  private renderView(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Calendar view").setHeading();
+
+    new Setting(containerEl)
+      .setName("Task calendar")
+      .setDesc("A month grid and agenda of exactly what the calendar file holds, and whether the file is up to date.")
+      .addButton((button) => button.setButtonText("Open").onClick(() => void this.plugin.openCalendarView()));
+
+    new Setting(containerEl)
+      .setName("Week starts on")
+      .setDesc("The language default follows Obsidian's language setting.")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("locale", "Language default")
+          .addOption("monday", "Monday")
+          .addOption("sunday", "Sunday")
+          .setValue(this.plugin.settings.weekStart)
+          .onChange((value) => {
+            this.plugin.settings.weekStart = (["locale", "monday", "sunday"].includes(value) ? value : "locale") as WeekStart;
+            void this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Show week numbers")
+      .setDesc("ISO week numbers beside each row.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showWeekNumbers).onChange((value) => {
+          this.plugin.settings.showWeekNumbers = value;
+          void this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Show tasks outside the file")
+      .setDesc(`Also draw dated tasks the calendar file leaves out, faded — on the free tier, the ones past the next ${FREE_TASK_LIMIT}.`)
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.previewShowCapped).onChange((value) => {
+          this.plugin.settings.previewShowCapped = value;
+          void this.plugin.saveSettings();
+        })
+      );
   }
 
   /**
@@ -600,6 +681,32 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("Request a feature").onClick(() => {
           window.open("https://github.com/israerusan/obsidian-task-calendar-bridge/issues/new?labels=enhancement");
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Diagnostics")
+      .setDesc("Copies your settings and export counts for a bug report. No task text, note names, vault name, or licence key.")
+      .addButton((button) => button.setButtonText("Copy diagnostics").onClick(() => void this.plugin.copyDiagnostics()));
+  }
+
+  // --- About -----------------------------------------------------------------
+
+  private renderAbout(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("About").setHeading();
+
+    new Setting(containerEl)
+      .setName(`What's new in ${this.plugin.manifest.version}`)
+      .setDesc("The highlights of this release.")
+      .addButton((button) => button.setButtonText("Show").onClick(() => this.plugin.showWhatsNew()));
+
+    new Setting(containerEl)
+      .setName("Show release notes after updates")
+      .setDesc("Once per update, never on a fresh install.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showReleaseNotes).onChange((value) => {
+          this.plugin.settings.showReleaseNotes = value;
+          void this.plugin.saveSettings();
         })
       );
   }

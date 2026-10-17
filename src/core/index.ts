@@ -8,6 +8,10 @@ export * from "./text";
 export * from "./timezone";
 export * from "./help";
 export * from "./report";
+export * from "./occurrences";
+export * from "./grid";
+export * from "./explain";
+export * from "./whatsNew";
 
 /** The free full-vault cap. A constant, not a setting — a setting is a paywall you can edit. */
 export const FREE_TASK_LIMIT = 25;

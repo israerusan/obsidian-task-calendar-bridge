@@ -5,3 +5,6 @@ export * from "./CalendarWriter";
 export * from "./TaskLane";
 export * from "./ParseIndex";
 export * from "./SettingsStore";
+export * from "./CalendarPreview";
+export * from "./Diagnostics";
+export * from "./Explain";

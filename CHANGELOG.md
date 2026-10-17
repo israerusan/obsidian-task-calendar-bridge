@@ -3,6 +3,59 @@
 All notable changes to Task Calendar Bridge are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-10-17
+
+The calendar comes into the vault. Until now the only way to see what your
+calendar app was about to show you was to export, import, and look; this release
+draws it inside Obsidian, from the same pipeline the export uses, and tells you
+whether the file on disk is current. The exported file itself is unchanged —
+byte-for-byte what 1.2.1 wrote — and event identity is untouched.
+
+### Added
+
+- **Task calendar view.** A month grid and an agenda of exactly what the calendar
+  file holds, in the right sidebar. Days carry a dot per event; repeating tasks
+  appear on every day they occur and multi-day events continue across the days
+  they span. Click a task to open its line (Ctrl/Cmd-click or middle-click for a
+  new tab; right-click for more). The status at the top says whether the file on
+  disk is **up to date**, **out of date**, or **not exported yet**, by comparing
+  it with what the next export would write. On the free tier, dated tasks past
+  the 25-task limit are drawn faded rather than hidden, so you can see what the
+  file leaves out. Keyboard: arrows move by day and week, Page Up/Down by month,
+  Home to today, Enter shows a day. Open it from the ribbon or **Open task
+  calendar**.
+- **Explain calendar event.** Right-click a task line (or run **Explain this
+  task's calendar event**) to see how it exports — date, time zone, duration,
+  repeat rule, reminder, categories, and where its identity comes from — or
+  exactly why it is not in the calendar: undated, inside a code block, past the
+  free limit, outside your folder filters, or sharing an id with another task.
+- **Export one note from the file list.** Right-click any note → **Export tasks
+  to calendar file**.
+- **Status bar menu.** Click the status bar item for export, report, copy-path
+  and calendar actions.
+- **What's new.** Release highlights are shown once after an update — never on a
+  fresh install or a downgrade — and can be turned off, or reopened with **Show
+  what's new**.
+- **Copy diagnostics** (command and settings button): your settings and export
+  counts for a bug report. No task text, note names, vault name, publish folder,
+  or licence key.
+- **A live example under Time handling** showing the exact `DTSTART` a 09:00
+  task is written with in the mode you chose.
+- **Calendar view settings**: week start (language default, Monday, Sunday), ISO
+  week numbers, and whether to draw tasks the file leaves out.
+- **Theme variables.** The view's colours derive from your theme; `--tcb-*`
+  variables and a Style Settings section let you retune them.
+
+### Changed
+
+- **The ribbon icon opens the task calendar** instead of exporting the current
+  note. Exporting the current note is one click away in the calendar's menu, the
+  file list's right-click menu, and the command palette.
+- On a fresh install the calendar view opens in the sidebar as the getting-started
+  guide, instead of a notice that disappeared after twelve seconds.
+- **Export current note tasks to ICS** only appears in the command palette when a
+  Markdown note is open.
+
 ## [1.2.1] - 2026-08-05
 
 Two fixes that only became visible once the plugin's internals were pulled apart

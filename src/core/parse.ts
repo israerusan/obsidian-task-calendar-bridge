@@ -169,6 +169,15 @@ export function parseTasksFromMarkdown(markdown: string, sourcePath: string, opt
   return { tasks, skipped };
 }
 
+/**
+ * Whether a single line is written as a task, with text, by the rules the parser applies — for
+ * telling "not a task" apart from "a task the parser deliberately ignored" (one in a code block).
+ */
+export function isTaskLine(line: string): boolean {
+  const match = TASK_RE.exec(stripQuoteMarkers(line));
+  return match !== null && match[3].trim() !== "";
+}
+
 /** Sorts by the instant the event starts, then by identity so output is stable. */
 export function compareTasks(a: CalendarTask, b: CalendarTask): number {
   const byDate = compareDates(a.date, b.date);
