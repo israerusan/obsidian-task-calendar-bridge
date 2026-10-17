@@ -135,9 +135,10 @@ export function occursOn(rule: Rule, start: string, date: string): boolean {
  * Every day in `[from, to]` (inclusive) on which a task starting on `start` occurs.
  *
  * Without a rule, or with one this module does not read, the answer is the start date alone —
- * if it is in range. `limit` bounds a pathological range, never a normal one.
+ * if it is in range. `limit` bounds a pathological range — a daily rule over a ten-year
+ * look-back is 3,660 — never a month grid or an agenda.
  */
-export function occurrencesBetween(start: string, rrule: string | undefined, from: string, to: string, limit = 400): string[] {
+export function occurrencesBetween(start: string, rrule: string | undefined, from: string, to: string, limit = 5000): string[] {
   if (!isValidDate(start) || !isValidDate(from) || !isValidDate(to) || compareDates(from, to) > 0) return [];
   const rule = rrule ? readRule(rrule) : undefined;
   if (!rule) return compareDates(start, from) >= 0 && compareDates(start, to) <= 0 ? [start] : [];

@@ -8,3 +8,4 @@ export * from "./SettingsStore";
 export * from "./CalendarPreview";
 export * from "./Diagnostics";
 export * from "./Explain";
+export * from "./SharedResult";

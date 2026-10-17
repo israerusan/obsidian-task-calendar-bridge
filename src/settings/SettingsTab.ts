@@ -463,7 +463,7 @@ export class TaskCalendarBridgeSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Show tasks outside the file")
+      .setName("Show tasks past the free limit")
       .setDesc(`Also draw dated tasks the calendar file leaves out, faded — on the free tier, the ones past the next ${FREE_TASK_LIMIT}.`)
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.previewShowCapped).onChange((value) => {

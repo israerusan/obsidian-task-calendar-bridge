@@ -17,7 +17,15 @@ export type { DuplicateIdentity, ExportReport, SkipCounts } from "./core";
  * came for was scrolled off the bottom.
  */
 export class ExportReportModal extends Modal {
-  constructor(app: App, private readonly report: ExportReport) {
+  constructor(
+    app: App,
+    private readonly report: ExportReport,
+    /**
+     * "export" reports a run that happened. "preview" is the calendar view's question — what the
+     * next export would do with the tasks as they are now — and must not claim anything was written.
+     */
+    private readonly mode: "export" | "preview" = "export"
+  ) {
     super(app);
   }
 
@@ -25,10 +33,13 @@ export class ExportReportModal extends Modal {
     const { contentEl, report } = this;
     contentEl.empty();
     // titleEl rather than setTitle(): setTitle is newer than manifest minAppVersion.
-    this.titleEl.setText("Last calendar export");
+    this.titleEl.setText(this.mode === "preview" ? "Your tasks right now" : "Last calendar export");
 
     const summary = contentEl.createDiv({ cls: "task-calendar-bridge-report" });
-    summary.createEl("p", { text: `${report.eventCount} event${report.eventCount === 1 ? "" : "s"} written to ${report.path} (${report.scope}).` });
+    const events = `${report.eventCount} event${report.eventCount === 1 ? "" : "s"}`;
+    summary.createEl("p", {
+      text: this.mode === "preview" ? `The next export would write ${events} to ${report.path}.` : `${events} written to ${report.path} (${report.scope}).`,
+    });
     if (report.publishedTo) summary.createEl("p", { text: `Also published to ${report.publishedTo}.` });
     if (report.publishError) {
       this.error(summary, `The calendar file was written, but publishing outside the vault failed: ${report.publishError}`);

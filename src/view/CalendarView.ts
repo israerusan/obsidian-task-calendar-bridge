@@ -1,4 +1,4 @@
-import { App, ItemView, Keymap, Menu, Modal, moment, setIcon, setTooltip, type WorkspaceLeaf } from "obsidian";
+import { App, ItemView, Keymap, Menu, Modal, Notice, moment, setIcon, setTooltip, type WorkspaceLeaf } from "obsidian";
 import { addDays, localToday, monthGrid, shiftMonth, type GridDay } from "../core";
 import { entriesByDay, type CalendarPreview, type DayEntry, type PreviewItem } from "../app";
 import type { LastExport, TaskCalendarBridgeSettings } from "../settings/schema";
@@ -10,12 +10,18 @@ const AGENDA_DAYS = 14;
 /** Dots drawn in one day cell before the rest collapse into a count. */
 const MAX_DOTS = 3;
 
-/** Whether the calendar file on disk already holds what the next export would write. */
-export type FileState = "missing" | "current" | "stale";
+/**
+ * Whether the calendar file on disk already holds what the next export would write.
+ * "unreadable" is its own state: a file that exists but could not be read is not "missing",
+ * and telling someone it was never exported sends them looking for the wrong problem.
+ */
+export type FileState = "missing" | "current" | "stale" | "unreadable";
 
 export interface PreviewSnapshot {
   preview: CalendarPreview;
   file: FileState;
+  /** Why the file could not be read, when it could not. */
+  fileError?: string;
   path: string;
   today: string;
   /** An export is running or about to. */
@@ -30,6 +36,8 @@ export interface CalendarViewHost {
   exportVaultTasks(showNotice: boolean): Promise<void>;
   exportActiveNote(): Promise<void>;
   showLastReport(): void;
+  /** The report for the tasks as they are now, rather than as last exported. */
+  showPreviewReport(): void;
   openImportGuide(): void;
   createSampleTaskNote(): Promise<void>;
   openSettings(): void;
@@ -62,6 +70,8 @@ export class TaskCalendarView extends ItemView {
   /** Bumped per refresh, so a slow one cannot overwrite a newer one's result. */
   private generation = 0;
   private gridEl: HTMLElement | null = null;
+  /** A refresh was skipped while the view was hidden. */
+  private stale = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -87,8 +97,25 @@ export class TaskCalendarView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.contentEl.addClass("tcb-view");
+    // Expanding a collapsed sidebar or switching to this tab changes the layout; that is when
+    // a view that skipped refreshes while hidden catches up.
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        if (this.stale && this.contentEl.isShown()) {
+          this.stale = false;
+          this.scheduleRefresh(0);
+        }
+      })
+    );
     this.render();
     await this.refresh();
+  }
+
+  onResize(): void {
+    if (this.stale && this.contentEl.isShown()) {
+      this.stale = false;
+      this.scheduleRefresh(0);
+    }
   }
 
   async onClose(): Promise<void> {
@@ -103,8 +130,18 @@ export class TaskCalendarView extends ItemView {
     this.addActions(menu);
   }
 
-  /** Coalesces bursts — an editing session fires a vault event per keystroke pause. */
+  /**
+   * Coalesces bursts — an editing session fires a vault event per keystroke pause.
+   *
+   * A view nobody can see (a collapsed sidebar, a background tab) only remembers that it is
+   * stale, and catches up when it is shown: a refresh walks the vault and builds the whole
+   * calendar, which is not worth doing every few seconds for a panel that is closed.
+   */
   scheduleRefresh(delayMs = 600): void {
+    if (!this.contentEl.isShown()) {
+      this.stale = true;
+      return;
+    }
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
@@ -161,8 +198,9 @@ export class TaskCalendarView extends ItemView {
 
   private renderStatus(container: HTMLElement): void {
     const bar = container.createDiv({ cls: "tcb-statusbar" });
-    const pill = bar.createDiv({ cls: "tcb-pill" });
-    pill.setAttr("role", "status");
+    // A button, not a label: every state but "up to date" has one obvious next step, and the
+    // pill is where the eye already is.
+    const pill = bar.createEl("button", { cls: "tcb-pill" });
     const dot = pill.createSpan({ cls: "tcb-pill-dot" });
     const label = pill.createSpan({ cls: "tcb-pill-label" });
 
@@ -182,32 +220,43 @@ export class TaskCalendarView extends ItemView {
     }
 
     const failed = snapshot.lastExport?.error && snapshot.lastExport.path === snapshot.path ? snapshot.lastExport.error : null;
-    let state: { cls: string; text: string; detail: string };
+    const exportNow = (): void => void this.host.exportVaultTasks(true);
+    const report = (): void => this.host.showPreviewReport();
+    let state: { cls: string; text: string; detail: string; action: () => void };
     if (snapshot.busy) {
-      state = { cls: "is-busy", text: "Updating…", detail: "An export is running or about to." };
+      state = { cls: "is-busy", text: "Updating…", detail: "An export is running or about to.", action: report };
     } else if (failed) {
-      state = { cls: "is-error", text: "Export failed", detail: failed };
+      state = { cls: "is-error", text: "Export failed", detail: `${failed} Click to try again.`, action: exportNow };
+    } else if (snapshot.file === "unreadable") {
+      state = {
+        cls: "is-error",
+        text: "Cannot read the file",
+        detail: `${snapshot.path} exists but could not be read${snapshot.fileError ? ` (${snapshot.fileError})` : ""}. A sync client may be holding it. Click to export again.`,
+        action: exportNow,
+      };
     } else if (snapshot.file === "missing") {
-      state = { cls: "is-stale", text: "Not exported yet", detail: `${snapshot.path} does not exist yet. Export to create it.` };
+      state = { cls: "is-stale", text: "Not exported yet", detail: `${snapshot.path} does not exist yet. Click to export it.`, action: exportNow };
     } else if (snapshot.file === "stale") {
       const auto = this.host.settings.isPro && this.host.settings.autoExport;
       state = {
         cls: "is-stale",
         text: "Out of date",
         detail: auto
-          ? `${snapshot.path} differs from your tasks; auto-export will update it shortly.`
-          : `${snapshot.path} differs from your tasks. Export to update it.`,
+          ? `${snapshot.path} differs from your tasks; auto-export will update it after your next edit. Click to export now.`
+          : `${snapshot.path} differs from your tasks. Click to export now.`,
+        action: exportNow,
       };
     } else {
-      state = { cls: "is-current", text: "Up to date", detail: `${snapshot.path} matches your tasks.` };
+      state = { cls: "is-current", text: "Up to date", detail: `${snapshot.path} matches your tasks. Click for the full breakdown.`, action: report };
     }
 
     pill.addClass(state.cls);
     dot.setAttr("aria-hidden", "true");
     const events = snapshot.preview.eventCount;
     label.setText(`${state.text} · ${events} event${events === 1 ? "" : "s"}`);
-    setTooltip(pill, state.detail);
-    pill.setAttr("aria-label", `${state.text}. ${state.detail}`);
+    // setTooltip writes aria-label too, so the spoken name is the state and what a click does.
+    setTooltip(pill, `${state.text}. ${state.detail}`);
+    pill.addEventListener("click", state.action);
   }
 
   private renderEmpty(container: HTMLElement): void {
@@ -232,11 +281,11 @@ export class TaskCalendarView extends ItemView {
     const { preview } = snapshot;
     if (preview.capped > 0) {
       const note = container.createDiv({ cls: "tcb-note" });
-      // Counted from the selection, not from events: a duplicate inside the selection still
-      // used one of the free slots, and "24 of 30" for a 25-task cap read as a bug.
+      // The cap counts tasks, not events: a duplicate inside the selection still takes a free
+      // slot, and is reported separately below as a task that cannot be exported.
       const selected = preview.items.filter((item) => item.state !== "capped").length;
       note.createSpan({
-        text: `The free tier puts the next ${selected} of your ${preview.items.length} dated tasks in the file.${this.host.settings.previewShowCapped ? " The rest are shown faded." : ""} `,
+        text: `The free tier exports the next ${selected} of your ${preview.totalFound} dated tasks.${this.host.settings.previewShowCapped ? " The rest are shown faded." : ""} `,
       });
       const link = note.createEl("a", { text: "Get Pro", href: this.host.purchaseUrl });
       link.setAttr("target", "_blank");
@@ -249,7 +298,8 @@ export class TaskCalendarView extends ItemView {
       const link = note.createEl("a", { text: "See why", href: "#" });
       link.addEventListener("click", (event) => {
         event.preventDefault();
-        this.host.showLastReport();
+        // The tasks as they are now — the last export's report may describe an older state.
+        this.host.showPreviewReport();
       });
     }
   }
@@ -331,12 +381,15 @@ export class TaskCalendarView extends ItemView {
     const inFile = entries.filter((entry) => entry.item.state === "exported").length;
     const spoken = moment(day.date, "YYYY-MM-DD").format("dddd D MMMM YYYY");
     const count = entries.length === 0 ? "no events" : `${inFile} event${inFile === 1 ? "" : "s"}${inFile < entries.length ? `, ${entries.length - inFile} not in the file` : ""}`;
-    cell.setAttr("aria-label", `${spoken}${day.isToday ? ", today" : ""}, ${count}`);
-    if (entries.length > 0) {
-      // Desktop hover: the day's titles, without opening anything.
+    const label = `${spoken}${day.isToday ? ", today" : ""}, ${count}`;
+    if (entries.length === 0) {
+      cell.setAttr("aria-label", label);
+    } else {
+      // One string for both: setTooltip writes aria-label itself, so a separate label set
+      // before it was silently replaced and a screen reader heard titles with no date.
       const lines = entries.slice(0, 8).map((entry) => `${entryTime(entry)}  ${entry.item.task.title}`);
       if (entries.length > 8) lines.push(`…and ${entries.length - 8} more`);
-      setTooltip(cell, lines.join("\n"), { placement: "bottom" });
+      setTooltip(cell, [label, ...lines].join("\n"), { placement: "bottom" });
     }
 
     cell.addEventListener("click", () => this.selectDay(day.date));
@@ -345,17 +398,32 @@ export class TaskCalendarView extends ItemView {
   private renderAgenda(container: HTMLElement, snapshot: PreviewSnapshot): void {
     const agenda = container.createDiv({ cls: "tcb-agenda" });
     const header = agenda.createDiv({ cls: "tcb-agenda-header" });
-    const from = this.selected ?? snapshot.today;
-    const to = this.selected ?? addDays(snapshot.today, AGENDA_DAYS - 1);
+    // Three scopes, in order: the chosen day; the upcoming fortnight while today's month is on
+    // screen; otherwise the whole month on screen, so paging the grid also pages the list.
+    const monthStart = `${this.month.year}-${String(this.month.month).padStart(2, "0")}-01`;
+    const showingToday = snapshot.today.startsWith(monthStart.slice(0, 8));
+    const scope: "day" | "upcoming" | "month" = this.selected ? "day" : showingToday ? "upcoming" : "month";
+    const from = scope === "day" && this.selected ? this.selected : scope === "upcoming" ? snapshot.today : monthStart;
+    const to =
+      scope === "day" && this.selected
+        ? this.selected
+        : scope === "upcoming"
+          ? addDays(snapshot.today, AGENDA_DAYS - 1)
+          : addDays(shiftMonthStart(this.month.year, this.month.month, 1), -1);
     header.createDiv({
       cls: "tcb-agenda-title",
-      text: this.selected ? moment(this.selected, "YYYY-MM-DD").format("dddd D MMMM") : "Upcoming",
+      text:
+        scope === "day" && this.selected
+          ? moment(this.selected, "YYYY-MM-DD").format("dddd D MMMM")
+          : scope === "upcoming"
+            ? "Upcoming"
+            : moment(monthStart, "YYYY-MM-DD").format("MMMM YYYY"),
     });
-    if (this.selected) {
+    if (scope !== "upcoming") {
       const clear = header.createEl("a", { text: "Show upcoming", href: "#", cls: "tcb-link" });
       clear.addEventListener("click", (event) => {
         event.preventDefault();
-        this.selectDay(null);
+        this.goToday();
       });
     }
 
@@ -364,14 +432,14 @@ export class TaskCalendarView extends ItemView {
     if (days.length === 0) {
       agenda.createDiv({
         cls: "tcb-muted",
-        text: this.selected ? "Nothing on this day." : `Nothing in the next ${AGENDA_DAYS} days.`,
+        text: scope === "day" ? "Nothing on this day." : scope === "upcoming" ? `Nothing in the next ${AGENDA_DAYS} days.` : "Nothing this month.",
       });
       return;
     }
 
     for (const date of days) {
       const group = agenda.createDiv({ cls: "tcb-agenda-day" });
-      if (!this.selected) {
+      if (scope !== "day") {
         const label = date === snapshot.today ? "Today" : date === addDays(snapshot.today, 1) ? "Tomorrow" : moment(date, "YYYY-MM-DD").format("ddd D MMM");
         group.createDiv({ cls: "tcb-agenda-date", text: label });
       }
@@ -384,59 +452,83 @@ export class TaskCalendarView extends ItemView {
     const { item } = entry;
     const { task } = item;
     const row = list.createEl("li", { cls: `tcb-entry is-${item.state}` });
-    row.tabIndex = 0;
-    row.setAttr("role", "button");
+    // A real button inside the list item, so the list keeps its list semantics and the row gets
+    // native focus, Enter and Space, rather than a <li> pretending to be a button.
+    const open = row.createEl("button", { cls: "tcb-entry-open" });
 
-    row.createSpan({ cls: "tcb-entry-time", text: entryTime(entry) });
-    const body = row.createDiv({ cls: "tcb-entry-body" });
-    const title = body.createDiv({ cls: "tcb-entry-title" });
+    open.createSpan({ cls: "tcb-entry-time", text: entryTime(entry) });
+    const body = open.createSpan({ cls: "tcb-entry-body" });
+    const title = body.createSpan({ cls: "tcb-entry-title" });
     if (task.status === "done") title.addClass("is-done");
     if (task.status === "cancelled") title.addClass("is-cancelled");
     title.setText(task.title);
 
-    const meta = body.createDiv({ cls: "tcb-entry-meta" });
+    const meta = body.createSpan({ cls: "tcb-entry-meta" });
     if (task.recurrence) this.badge(meta, "repeat", `Repeats ${task.recurrence.source}`);
     if (task.reminderMinutes) this.badge(meta, "bell", "Has a reminder alarm");
     if (task.priority !== undefined && task.priority <= 2) this.badge(meta, "arrow-up", "High priority");
     if (item.state === "capped") this.badge(meta, "lock", "Not in the file — past the free tier's limit");
     if (item.state === "duplicate") this.badge(meta, "alert-triangle", "Not in the file — shares an identity with another task");
     for (const tag of task.tags.slice(0, 3)) meta.createSpan({ cls: "tcb-tag", text: `#${tag}` });
-    meta.createSpan({ cls: "tcb-source", text: task.sourcePath.replace(/\.md$/i, "") });
+    // The note's name, not its folder path: a narrow sidebar has no room for it, and the full
+    // path is one hover away.
+    const note = noteName(task.sourcePath);
+    const source = meta.createSpan({ cls: "tcb-source", text: note });
+    source.setAttr("title", `${task.sourcePath}, line ${task.line}`);
 
     const states: Record<PreviewItem["state"], string> = {
       exported: "",
       capped: ", not in the calendar file",
       duplicate: ", not in the calendar file because of a duplicate identity",
     };
-    row.setAttr("aria-label", `${entryTime(entry)}, ${task.title}${states[item.state]}. Opens ${task.sourcePath} at line ${task.line}.`);
+    open.setAttr("aria-label", `${entryTime(entry)}, ${task.title}${states[item.state]}, in ${note}`);
 
-    const open = (event: MouseEvent | KeyboardEvent): void => void this.host.openTask(item, Keymap.isModEvent(event));
-    row.addEventListener("click", open);
-    row.addEventListener("auxclick", (event) => {
-      if (event.button === 1) void this.host.openTask(item, "tab");
-    });
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        open(event);
-      }
-    });
-    row.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
+    const more = row.createEl("button", { cls: "clickable-icon tcb-entry-more" });
+    setIcon(more, "more-vertical");
+    more.setAttr("aria-label", `More actions for ${task.title}`);
+    setTooltip(more, "More actions");
+
+    const showMenu = (position: { x: number; y: number }): void => {
       const menu = new Menu();
       menu.addItem((menuItem) => menuItem.setTitle("Open note").setIcon("file").onClick(() => void this.host.openTask(item, false)));
       menu.addItem((menuItem) => menuItem.setTitle("Open in new tab").setIcon("file-plus").onClick(() => void this.host.openTask(item, "tab")));
       menu.addItem((menuItem) => menuItem.setTitle("Open to the right").setIcon("separator-vertical").onClick(() => void this.host.openTask(item, "split")));
       menu.addSeparator();
       menu.addItem((menuItem) => menuItem.setTitle("Explain calendar event").setIcon("info").onClick(() => this.host.explainTask(item)));
-      menu.addItem((menuItem) =>
-        menuItem
-          .setTitle("Copy event UID")
-          .setIcon("copy")
-          .onClick(() => void navigator.clipboard.writeText(item.uid))
-      );
-      menu.showAtMouseEvent(event);
+      menu.addItem((menuItem) => menuItem.setTitle("Copy event UID").setIcon("copy").onClick(() => void this.copyUid(item.uid)));
+      menu.showAtPosition(position, this.containerEl.doc);
+    };
+    const below = (el: HTMLElement): { x: number; y: number } => {
+      const rect = el.getBoundingClientRect();
+      return { x: rect.left, y: rect.bottom };
+    };
+
+    open.addEventListener("click", (event) => void this.host.openTask(item, Keymap.isModEvent(event)));
+    open.addEventListener("auxclick", (event) => {
+      if (event.button === 1) void this.host.openTask(item, "tab");
     });
+    open.addEventListener("keydown", (event) => {
+      // The keyboard's own way to the context menu, so nothing is right-click-only.
+      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+        event.preventDefault();
+        showMenu(below(open));
+      }
+    });
+    row.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      // A keyboard-raised contextmenu event has no pointer position worth using.
+      showMenu(event.clientX === 0 && event.clientY === 0 ? below(open) : { x: event.clientX, y: event.clientY });
+    });
+    more.addEventListener("click", () => showMenu(below(more)));
+  }
+
+  private async copyUid(uid: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(uid);
+      new Notice("Event UID copied.");
+    } catch {
+      new Notice(`Could not reach the clipboard. The UID is ${uid}`, 10000);
+    }
   }
 
   private renderFooter(container: HTMLElement): void {
@@ -462,7 +554,7 @@ export class TaskCalendarView extends ItemView {
     menu.addSeparator();
     menu.addItem((item) =>
       item
-        .setTitle("Show tasks outside the file")
+        .setTitle("Show tasks past the free limit")
         .setIcon("eye")
         .setChecked(this.host.settings.previewShowCapped)
         .onClick(() => {
@@ -578,6 +670,17 @@ export class TaskCalendarView extends ItemView {
     badge.setAttr("aria-label", label);
     setTooltip(badge, label);
   }
+}
+
+/** `Projects/Launch plan.md` → `Launch plan`. */
+function noteName(path: string): string {
+  return (path.split("/").pop() ?? path).replace(/\.md$/i, "");
+}
+
+/** The first day of the month `delta` months from the given one, as `YYYY-MM-DD`. */
+function shiftMonthStart(year: number, month: number, delta: number): string {
+  const next = shiftMonth(year, month, delta);
+  return `${next.year}-${String(next.month).padStart(2, "0")}-01`;
 }
 
 function entryTime(entry: DayEntry): string {

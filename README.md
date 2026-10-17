@@ -24,6 +24,8 @@ Best fit if you:
 | Timed events, durations, multi-day events | Yes | Yes |
 | Obsidian Tasks + Dataview syntax | Yes | Yes |
 | Stable event identity | Yes | Yes |
+| Task calendar view: month grid, agenda, "is my file up to date?" | Yes | Yes |
+| Explain any task's calendar event | Yes | Yes |
 | Repeating events | No | Yes |
 | Reminder alarms | No | Yes |
 | Auto-export when notes change | No | Yes |
@@ -91,8 +93,8 @@ No hosted sync layer. No account. No "please trust our server with your planning
 
 ## First win in 2 minutes
 
-1. Install the plugin.
-2. Run `Create sample task note` from the command palette.
+1. Install the plugin. The **task calendar** opens in the right sidebar.
+2. Press the *Create a sample note* button there (or run **Create sample task note**). Its tasks appear on the calendar straight away.
 3. Run **Export current note tasks to ICS**, then import the generated `.ics` file into your calendar.
 
 If that clicks, Pro unlocks the live version of the workflow: full-vault export, auto-export, recurring events, reminders, publish-outside-the-vault, and folder filtering.
@@ -120,7 +122,17 @@ Both the Obsidian Tasks emoji vocabulary and Dataview-style inline fields work, 
 - **Priority** — `🔺 ⏫ 🔼 🔽 ⏬` or `[priority:: high]` — becomes calendar priority.
 - Tasks inside code fences are ignored; tasks in callouts, blockquotes, and numbered lists are exported.
 
-**Wondering why a task is missing?** Run **Show last export report**. It lists every skipped task and the reason.
+**Wondering why a task is missing?** Right-click the task and choose **Explain calendar event**, or run **Show last export report** for the whole vault. Both say exactly why, and every report row links to its line.
+
+## See your calendar before your calendar app does
+
+The **task calendar** (ribbon icon, or **Open task calendar**) draws the calendar file inside Obsidian: a month grid with a dot per event, and an agenda of the next two weeks or of any day you pick. It is built by the same code that writes the file, so it shows exactly what your calendar app will — repeating tasks on every day they occur, multi-day events across their days, and nothing the file leaves out.
+
+- **Is my calendar up to date?** The status at the top compares the file on disk with what the next export would write: **Up to date**, **Out of date**, or **Not exported yet**, with an export button beside it.
+- **Click a task to open its line.** Ctrl/Cmd-click or middle-click opens a new tab; right-click to open it to the right, explain its event, or copy its UID.
+- **Free tier:** tasks past the 25-task limit are drawn faded, so you can see what the file leaves out instead of guessing.
+- **Keyboard:** arrow keys move by day and week, Page Up/Down by month, Home to today, Enter shows a day, Escape goes back to upcoming. The `?` button shows the legend.
+- **Settings → Calendar view:** week start (language default, Monday or Sunday), ISO week numbers, and whether to draw tasks outside the file. Colours come from your theme; the `--tcb-*` CSS variables and the Style Settings plugin can retune them.
 
 ## Free gets you to the first real win
 
@@ -182,8 +194,26 @@ Turn on auto-export and the published copy keeps itself current.
 
 Refresh intervals are set by the calendar provider, not by this plugin. Google refreshes on its own schedule — often only every several hours, sometimes longer — and Apple Calendar lets you choose. Neither refreshes on demand, so a subscribed calendar always lags the file a little.
 
+## Commands
+
+None has a default hotkey; bind the ones you use under **Settings → Hotkeys**.
+
+| Command | ID |
+| --- | --- |
+| Open task calendar | `task-calendar-bridge:open-calendar-view` |
+| Export vault tasks to ICS | `task-calendar-bridge:export-vault-tasks` |
+| Export current note tasks to ICS | `task-calendar-bridge:export-current-note-tasks` |
+| Explain this task's calendar event | `task-calendar-bridge:explain-task-event` |
+| Show last export report | `task-calendar-bridge:show-export-report` |
+| Copy calendar file path | `task-calendar-bridge:copy-ics-path` |
+| Open calendar import guide | `task-calendar-bridge:open-import-guide` |
+| Create sample task note | `task-calendar-bridge:create-sample-task-note` |
+| Show what's new | `task-calendar-bridge:show-whats-new` |
+| Copy diagnostics for a bug report | `task-calendar-bridge:copy-diagnostics` |
+
 ## Practical trust notes
 
+- **No network access at all.** The plugin makes no HTTP requests: no telemetry, no update check, no licence server. The only things that leave the vault are the files you ask it to write — the calendar in the vault, and, with Pro publishing on, a copy in the folder you chose.
 - The plugin works offline. There is no account and no hosted sync service.
 - License verification is offline too. Pro does not depend on a subscription backend staying alive.
 - Before you publish a calendar file, decide whether you want note links and source paths embedded in it. You can turn note-linking off before sharing the feed.
@@ -204,6 +234,13 @@ Refresh intervals are set by the calendar provider, not by this plugin. Google r
 4. Run `Create sample task note` from the command palette to test it.
 
 ## Release and upgrade notes
+
+### Upgrading to 1.3.0
+
+Nothing to do: the exported file and every event's identity are unchanged. One
+habit changes — **the ribbon icon now opens the task calendar** rather than
+exporting the current note. Export the current note from the calendar's `⋯`
+menu, by right-clicking the note in the file list, or with the command.
 
 ### Upgrading to 1.2.0
 
@@ -238,6 +275,7 @@ the only place I track them, so an issue will always get further than a review c
 
 - **[Report a bug](https://github.com/israerusan/obsidian-task-calendar-bridge/issues/new?labels=bug)** — please include your Obsidian version, your operating system, and the steps that reproduce it.
 - **[Request a feature](https://github.com/israerusan/obsidian-task-calendar-bridge/issues/new?labels=enhancement)** — describe the workflow you are trying to make faster; that is more useful than a proposed solution.
+- **Attach diagnostics.** Run **Copy diagnostics for a bug report** and paste the result into the issue. It holds your settings and export counts only — no task text, note names, vault name, publish folder, or licence key.
 - **[Browse open issues](https://github.com/israerusan/obsidian-task-calendar-bridge/issues)** — worth a look first, in case it is already tracked.
 
 ## More plugins by the same author

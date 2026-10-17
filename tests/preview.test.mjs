@@ -22,7 +22,7 @@ const core = await load("src/core/index.ts", "preview-core");
 const app = await load("src/app/index.ts", "preview-app");
 const { sampleEventLines } = await load("src/app/SampleEvent.ts", "preview-sample");
 const { occurrencesBetween, readRule, monthGrid, isoWeekNumber, shiftMonth, parseTasksFromMarkdown, parseRecurrence, isNewerVersion, notesSince, RELEASE_NOTES, explainTask, identitySource, isTaskLine } = core;
-const { buildPreview, entriesByDay, isCalendarCurrent, explainLine, buildDiagnostics, scrub, entitlements, buildCalendar, selectForExport } = app;
+const { buildPreview, entriesByDay, isCalendarCurrent, explainLine, buildDiagnostics, classifyError, entitlements, buildCalendar, selectForExport, SharedResult } = app;
 
 const PRO = { includeCompleted: true, includeRecurrence: true, includeReminders: true };
 const FREE = { includeCompleted: false, includeRecurrence: false, includeReminders: false };
@@ -214,6 +214,66 @@ const md = (lines) => lines.join("\n");
   );
 }
 
+{
+  // A long one-off event keeps every one of its days, however far from its start the window is.
+  const parsed = parseTasksFromMarkdown("- [ ] Sabbatical [due:: 2026-01-01] [end:: 2026-06-30]", "Long.md", PRO);
+  const preview = buildPreview({ tasks: parsed.tasks, skipped: [], rights: entitlements(settings({ isPro: true })), today, options: OPTIONS, vaultName: "Vault", now: FROZEN });
+  const june = entriesByDay(preview.items, "2026-06-01", "2026-06-30");
+  assert.equal(june.size, 30, "every June day of a January-to-June event is drawn");
+  assert.equal(entriesByDay(preview.items, "2026-07-01", "2026-07-31").size, 0, "and nothing after it ends");
+  assert.equal(entriesByDay(preview.items, "2025-12-01", "2025-12-31").size, 0, "or before it starts");
+
+  // A repeating multi-day event that began before the window still shows inside it.
+  const weekly = parseTasksFromMarkdown("- [ ] Course [due:: 2026-10-05] [end:: 2026-10-07] 🔁 every week", "Course.md", PRO);
+  const wp = buildPreview({ tasks: weekly.tasks, skipped: [], rights: entitlements(settings({ isPro: true })), today, options: OPTIONS, vaultName: "Vault", now: FROZEN });
+  const days = entriesByDay(wp.items, "2026-10-13", "2026-10-13");
+  assert.deepEqual(days.get("2026-10-13").map((entry) => entry.kind), ["continues"], "Monday's instance is still running on Tuesday");
+}
+
+// --- SharedResult: one computation at a time, never a stale answer -------------------------
+
+{
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  let runs = 0;
+  const releases = [];
+  const shared = new SharedResult(() => {
+    runs++;
+    const run = runs;
+    return new Promise((resolve) => releases.push(() => resolve(run)));
+  });
+
+  const a = shared.get();
+  const b = shared.get();
+  assert.equal(runs, 1, "two callers, one computation");
+
+  shared.invalidate();
+  const c = shared.get();
+  const d = shared.get();
+  assert.equal(runs, 1, "an invalidation while running does not start a second computation alongside it");
+
+  releases[0]();
+  assert.equal(await a, 1);
+  assert.equal(await b, 1);
+  await flush();
+  assert.equal(runs, 2, "exactly one follow-up for everyone who asked after the invalidation");
+  releases[1]();
+  assert.equal(await c, 2, "a caller after an invalidation never receives the older result");
+  assert.equal(await d, 2);
+
+  assert.equal(await shared.get(), 2, "cached until the next invalidation");
+  assert.equal(runs, 2);
+
+  // Failures are not cached.
+  let fail = true;
+  const flaky = new SharedResult(async () => {
+    if (fail) throw new Error("boom");
+    return "ok";
+  });
+  await assert.rejects(flaky.get(), /boom/);
+  fail = false;
+  assert.equal(await flaky.get(), "ok");
+}
+
 // --- Release notes -------------------------------------------------------------------------
 
 {
@@ -306,13 +366,14 @@ const md = (lines) => lines.join("\n");
 
 // --- Diagnostics -------------------------------------------------------------------------------
 
+let baseDiagnosticsSettings;
 {
   const text = buildDiagnostics({
     pluginVersion: "1.3.0",
     obsidianVersion: "1.7.2",
     platform: "Windows",
     publishSupported: true,
-    settings: {
+    settings: (baseDiagnosticsSettings = {
       licenseKey: "SECRET.KEY",
       isPro: true,
       licenseEmail: "buyer@example.com",
@@ -350,7 +411,7 @@ const md = (lines) => lines.join("\n");
       previewShowCapped: true,
       showReleaseNotes: true,
       lastSeenVersion: "1.3.0",
-    },
+    }),
   });
   for (const secret of ["SECRET", "buyer@example.com", "My private calendar", "alice", "Clients/Acme", "lawyer", "Secret/Plan"]) {
     assert.ok(!text.includes(secret), `diagnostics must not contain ${secret}:\n${text}`);
@@ -360,10 +421,42 @@ const md = (lines) => lines.join("\n");
   assert.match(text, /Europe\/Madrid/);
   assert.match(text, /include 2 folders/);
   assert.match(text, /no-date ×1/);
-  assert.match(text, /EBUSY/);
+  assert.match(text, /Publish error: publish write failed, EBUSY/);
 
-  assert.equal(scrub("Could not write to /Users/alice/Dropbox/cal: EACCES"), "Could not write to …/cal: EACCES");
-  assert.equal(scrub("Calendar/tasks.ics already exists"), "Calendar/tasks.ics already exists", "vault-relative paths are kept");
+  // Error messages are categorised, never copied: none of these may survive, whatever shape
+  // the path takes.
+  const failures = [
+    "Projects/Acquisition/Foo Corp.md is no longer a file in this vault.",
+    "Calendar/Client X/tasks.ics already exists and was not created by this plugin. Choose another output path.",
+    "Could not write to C:\Users\alice\Dropbox\Secret Client: EACCES: permission denied",
+    "Could not write to \\server\share\Board Minutes: EBUSY",
+    "Could not write to /Users/alice/Mes Clients/日本: ENOENT",
+    "\"Private Folder\" is not an absolute folder path. Use the full path, for example /Users/you/Dropbox/calendar.",
+    "Something nobody anticipated about Acme Corp",
+  ];
+  for (const message of failures) {
+    const category = classifyError(message);
+    for (const secret of ["Acquisition", "Foo Corp", "Client X", "alice", "Secret Client", "Board Minutes", "Mes Clients", "日本", "Private Folder", "Acme"]) {
+      assert.ok(!category.includes(secret), `"${category}" leaks "${secret}"`);
+    }
+  }
+  assert.equal(classifyError(failures[0]), "a note vanished during export");
+  assert.equal(classifyError(failures[1]), "output path belongs to another file");
+  assert.equal(classifyError(failures[2]), "publish write failed, EACCES");
+  assert.equal(classifyError(failures[5]), "publish folder not absolute");
+  assert.equal(classifyError(failures[6]), "other error");
+  assert.equal(classifyError("The path must end in .ics so the plugin can never overwrite a note."), "invalid output path");
+  assert.equal(classifyError("The vault and current-note output paths are the same file. Give them different paths."), "output paths are the same file");
+
+  const failed = buildDiagnostics({
+    pluginVersion: "1.3.0",
+    obsidianVersion: "1.7.2",
+    platform: "macOS",
+    publishSupported: true,
+    settings: { ...JSON.parse(JSON.stringify(baseDiagnosticsSettings)), lastExport: { at: "2026-10-17T10:00:00.000Z", scope: "whole vault", path: "Calendar/tasks.ics", eventCount: 0, skippedCount: 0, error: failures[0] } },
+  });
+  assert.match(failed, /FAILED \(a note vanished during export\)/);
+  assert.ok(!failed.includes("Acquisition"));
 }
 
 // --- The settings example is what the exporter writes ------------------------------------------

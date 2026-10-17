@@ -1,4 +1,4 @@
-import { addDays, compareDates, createUid, icsSignature, occurrencesBetween, type CalendarTask, type SkipCounts, type SkippedTask } from "../core";
+import { addDays, compareDates, createUid, icsSignature, occurrencesBetween, type CalendarTask, type DuplicateIdentity, type SkipCounts, type SkippedTask } from "../core";
 import { buildCalendar, selectForExport, type CalendarOptions } from "./ExportPlan";
 import type { Entitlements } from "./Entitlements";
 
@@ -33,6 +33,11 @@ export interface CalendarPreview {
   duplicates: number;
   /** Genuine losses, warnings, and exclusions, counted the way the report counts them. */
   counts: SkipCounts;
+  /** The report's sample of skips and the duplicate list, for "see why" without exporting. */
+  sample: SkippedTask[];
+  duplicateIds: DuplicateIdentity[];
+  /** Dated tasks found, before the free cap. */
+  totalFound: number;
   /** The calendar the export would write, minus DTSTAMP — comparable with the file on disk. */
   signature: string;
 }
@@ -77,6 +82,9 @@ export function buildPreview(input: PreviewInput): CalendarPreview {
     capped: selected.capped,
     duplicates,
     counts: built.counts,
+    sample: built.sample,
+    duplicateIds: built.duplicates,
+    totalFound: input.tasks.length,
     signature: built.signature,
   };
 }
@@ -101,8 +109,13 @@ export interface DayEntry {
   kind: EntryKind;
 }
 
-/** A multi-day event longer than this is drawn on its first two months only. */
-const MAX_SPAN_DAYS = 62;
+/**
+ * How far back to look for an instance of a REPEATING multi-day event that started before the
+ * window and is still running in it. A one-off event needs no look-back at all — its span is
+ * intersected with the window directly — so this bounds only the pathological case of a rule
+ * whose every instance lasts longer than ten years.
+ */
+const MAX_REPEAT_LOOKBACK_DAYS = 3660;
 
 /**
  * Every visible day an item touches, between `from` and `to` inclusive, grouped by day and
@@ -121,17 +134,24 @@ export function entriesByDay(items: PreviewItem[], from: string, to: string): Ma
 
   for (const item of items) {
     const { task } = item;
-    const spanDays = task.endDate ? Math.min(MAX_SPAN_DAYS, Math.max(0, daysBetween(task.date, task.endDate))) : 0;
-    // A repeating multi-day event starts on every occurrence, so look back far enough to catch
-    // an instance that began before the window and is still running inside it.
-    const starts = occurrencesBetween(task.date, task.recurrence?.rrule, addDays(from, -spanDays), to);
+    const spanDays = task.endDate ? Math.max(0, daysBetween(task.date, task.endDate)) : 0;
+    // A one-off event starts once; a repeating one on every occurrence, so look back far enough
+    // to catch an instance that began before the window and is still running inside it.
+    const starts = task.recurrence
+      ? occurrencesBetween(task.date, task.recurrence.rrule, addDays(from, -Math.min(spanDays, MAX_REPEAT_LOOKBACK_DAYS)), to)
+      : compareDates(task.date, to) <= 0
+        ? [task.date]
+        : [];
     for (const start of starts) {
       const kind: EntryKind = start === task.date ? "start" : "repeat";
       if (compareDates(start, from) >= 0) add({ item, date: start, kind });
-      for (let offset = 1; offset <= spanDays; offset++) {
-        const day = addDays(start, offset);
-        if (compareDates(day, to) > 0) break;
-        if (compareDates(day, from) >= 0) add({ item, date: day, kind: "continues" });
+      // Only the part of the span inside the window is walked, however long the event: a task
+      // running January to June still has its June days, and costs the same as a short one.
+      const last = addDays(start, spanDays);
+      let day = compareDates(addDays(start, 1), from) >= 0 ? addDays(start, 1) : from;
+      while (compareDates(day, last) <= 0 && compareDates(day, to) <= 0) {
+        add({ item, date: day, kind: "continues" });
+        day = addDays(day, 1);
       }
     }
   }

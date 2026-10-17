@@ -75,7 +75,13 @@ The date on the task has to agree with the rule: "every week on Monday" on a tas
 
 ## Why is a task missing?
 
-Run "Show last export report". It separates tasks that did not reach the calendar at all from tasks that were exported with one field ignored, and from tasks excluded on purpose by your settings. Each entry links straight to the line it came from.
+For one task: right-click its line and choose "Explain calendar event". It shows how the task exports, or exactly why it does not.
+
+For the whole vault: run "Show last export report". It separates tasks that did not reach the calendar at all from tasks that were exported with one field ignored, and from tasks excluded on purpose by your settings. Each entry links straight to the line it came from.
+
+## See it before your calendar app does
+
+Run "Open task calendar" for a month grid and agenda of exactly what the calendar file holds. The status at its top says whether the file on disk is up to date with your tasks.
 `;
 
 export const SAMPLE_TASK_NOTE = `# Task Calendar Bridge Sample

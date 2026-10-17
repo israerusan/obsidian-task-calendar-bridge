@@ -4,6 +4,7 @@ import {
   compareTasks,
   describeAge,
   isNewerVersion,
+  isSameFile,
   isTaskLine,
   localToday,
   notesSince,
@@ -22,6 +23,7 @@ import {
   explainLine,
   isCalendarCurrent,
   ParseIndex,
+  SharedResult,
   SettingsStore,
   TaskLane,
   CalendarWriter,
@@ -42,7 +44,7 @@ import { LicenseManager } from "./license/LicenseManager";
 import { isPublishSupported, publishCalendar, publishedFileExists } from "./publish";
 import { TaskCalendarBridgeSettingTab } from "./settings/SettingsTab";
 import { PURCHASE_URL, type TaskCalendarBridgeSettings } from "./settings/schema";
-import { CALENDAR_VIEW_TYPE, TaskCalendarView, type CalendarViewHost, type PreviewSnapshot } from "./view/CalendarView";
+import { CALENDAR_VIEW_TYPE, TaskCalendarView, type CalendarViewHost, type FileState, type PreviewSnapshot } from "./view/CalendarView";
 import { openTaskSource } from "./ui/openSource";
 import { WhatsNewModal } from "./ui/WhatsNewModal";
 import { ExplainModal } from "./ui/ExplainModal";
@@ -65,6 +67,11 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   private exportsRunning = 0;
   /** The day the calendar views were last drawn for; they redraw when it changes. */
   private viewDay = localToday();
+  /**
+   * What the next whole-vault export would contain. One computation at a time, shared by every
+   * calendar view and the explain command, and recomputed only after something it reads changed.
+   */
+  private preview!: SharedResult<CalendarPreview>;
 
   async onload(): Promise<void> {
     // window.* rather than bare timers, so a lane still fires in a popped-out window.
@@ -122,6 +129,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       },
     });
     this.notes = new ParseIndex({ read: (note) => this.app.vault.cachedRead(this.mustBeFile(note.path)) });
+    this.preview = new SharedResult(() => this.computePreview());
 
     // Only now does anything touch the disk. Everything above is wiring.
     const outcome = await this.store.load();
@@ -249,7 +257,8 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         const today = localToday();
         if (today === this.viewDay) return;
         this.viewDay = today;
-        this.refreshCalendarViews();
+        // The free tier exports "the next 25 from today", so the preview itself changes.
+        this.invalidatePreview();
       }, 60_000)
     );
 
@@ -291,11 +300,16 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     const seen = this.settings.lastSeenVersion;
     if (seen && !isNewerVersion(current, seen)) return;
 
-    // Installs from before this setting existed have no stored version. One that was already
-    // onboarded is an upgrade, so it gets this release's notes; one that was not is brand new.
-    const upgrading = seen ? true : this.settings.hasOnboarded;
+    // Installs from before this setting existed have no stored version. Any trace of use marks
+    // an upgrade — hasOnboarded only exists since 1.2.0, so a 1.1 install is recognised by its
+    // export record, its licence, or the files it owns. None of them means a fresh install.
+    const s = this.settings;
+    const upgrading = seen ? true : s.hasOnboarded || s.lastExport !== null || s.licenseKey !== "" || s.ownedPaths.length > 0;
     const notes = notesSince(seen || "0", current).filter((release) => release.showOnUpdate !== false);
     this.settings.lastSeenVersion = current;
+    // An existing user is not a new one: the release notes introduce the calendar, so the
+    // first-run guidance would only be a second interruption on the same load.
+    if (upgrading) this.settings.hasOnboarded = true;
     void this.saveSettings();
 
     if (!upgrading || !this.settings.showReleaseNotes) return;
@@ -332,10 +346,14 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     this.saveLane.cancel();
     this.notes.clear();
     this.writer.forget();
+    this.preview.clear();
   }
 
   private onVaultChange(path: string, relevant: boolean): void {
     this.notes.forget(path);
+    // The calendar file itself, deleted or edited by hand: the view's "up to date" verdict is
+    // about that file, so it has to look again.
+    if (isSameFile(path, this.settings.vaultOutputPath)) this.refreshCalendarViews();
     if (!relevant) return;
     // Never react to the calendar files this plugin writes itself, nor to a note
     // the folder filters exclude — a whole-vault re-export triggered by an edit
@@ -347,7 +365,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     // own output for a user edit.
     if (!this.shouldIncludeFile(path)) return;
     this.exportLane.schedule();
-    this.refreshCalendarViews();
+    this.invalidatePreview();
   }
 
   // --- Exports ---------------------------------------------------------------
@@ -393,11 +411,12 @@ export default class TaskCalendarBridgePlugin extends Plugin {
    * One walk for both the export and the calendar view, so the view cannot disagree with the
    * file about which notes count.
    */
-  private async collectVaultTasks(): Promise<{ tasks: CalendarTask[]; skipped: SkippedTask[] }> {
+  private async collectVaultTasks(options: ParseOptions = this.parseOptions()): Promise<{ tasks: CalendarTask[]; skipped: SkippedTask[] }> {
     const tasks: CalendarTask[] = [];
     const skipped: SkippedTask[] = [];
-    const options = this.parseOptions();
     for (const file of this.app.vault.getMarkdownFiles()) {
+      // Checked per note: a walk of a large vault outlives a plugin disabled halfway through it.
+      if (this.unloaded) throw new Error("Task Calendar Bridge was disabled.");
       if (!this.shouldIncludeFile(file.path)) continue;
       const result = await this.notes.parse({ path: file.path, mtime: file.stat.mtime }, options);
       tasks.push(...result.tasks);
@@ -574,13 +593,13 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   async saveSettings(): Promise<void> {
     await this.store.save();
     // Most settings change what the calendar view shows: the time mode, the folder filters,
-    // a Pro toggle that turns repeats on.
-    this.refreshCalendarViews();
+    // a Pro toggle that turns repeats on, the licence itself.
+    this.invalidatePreview();
   }
 
   saveSettingsSoon(): void {
     this.store.saveSoon();
-    this.refreshCalendarViews();
+    this.invalidatePreview();
   }
 
   flushSettings(): Promise<void> {
@@ -766,6 +785,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       exportVaultTasks: (showNotice) => this.exportVaultTasks(showNotice),
       exportActiveNote: () => this.exportCurrentNoteTasks(true),
       showLastReport: () => this.showLastReport(),
+      showPreviewReport: () => this.showPreviewReport(),
       openImportGuide: () => this.openImportGuide(),
       createSampleTaskNote: () => this.createSampleTaskNote(),
       openSettings: () => this.openSettings(),
@@ -788,6 +808,14 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     if (focus) await this.app.workspace.revealLeaf(leaf);
   }
 
+  /** Something the preview reads has changed: recompute it, then redraw. */
+  private invalidatePreview(): void {
+    if (this.unloaded) return;
+    this.preview.invalidate();
+    this.refreshCalendarViews();
+  }
+
+  /** Redraws the views. The preview is reused if nothing it reads has changed. */
   refreshCalendarViews(): void {
     if (this.unloaded) return;
     for (const leaf of this.app.workspace.getLeavesOfType(CALENDAR_VIEW_TYPE)) {
@@ -796,36 +824,78 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     }
   }
 
+  /**
+   * Every input is read BEFORE the walk, so one preview is one coherent configuration. Reading
+   * the licence and the calendar options afterwards could pair tasks parsed under the old repeat
+   * and reminder gates with the new options, and call the result "up to date".
+   */
   private async computePreview(): Promise<CalendarPreview> {
-    const { tasks, skipped } = await this.collectVaultTasks();
-    return buildPreview({
-      tasks,
-      skipped,
-      rights: this.entitlements(),
-      today: localToday(),
-      options: this.calendarOptions(),
-      vaultName: this.app.vault.getName(),
-      now: new Date(),
-    });
+    const rights = this.entitlements();
+    const options = this.calendarOptions();
+    const parseOptions = this.parseOptions();
+    const today = localToday();
+    const vaultName = this.app.vault.getName();
+    const { tasks, skipped } = await this.collectVaultTasks(parseOptions);
+    return buildPreview({ tasks, skipped, rights, today, options, vaultName, now: new Date() });
   }
 
+  /**
+   * The preview, and what the file on disk says about it.
+   *
+   * The file is read AFTER the preview is ready, not before: an export finishing during the walk
+   * then shows up as the file it wrote, which matches the preview. Any vault edit during the walk
+   * invalidated the preview, and the refresh that edit scheduled draws the newer answer.
+   */
   private async previewSnapshot(): Promise<PreviewSnapshot> {
-    const preview = await this.computePreview();
+    const preview = await this.preview.get();
     const path = normalizePath(this.settings.vaultOutputPath);
-    let contents: string | null = null;
-    try {
-      if (await this.app.vault.adapter.exists(path)) contents = await this.app.vault.adapter.read(path);
-    } catch {
-      // Unreadable reads as missing: the next export rewrites it either way.
-    }
+    const read = await this.readCalendarFile(path);
+    const file: FileState = read.state === "present" ? (isCalendarCurrent(preview, read.contents) ? "current" : "stale") : read.state;
     return {
       preview,
-      file: contents === null ? "missing" : isCalendarCurrent(preview, contents) ? "current" : "stale",
+      file,
+      fileError: read.state === "unreadable" ? read.error : undefined,
       path,
       today: localToday(),
       busy: this.exportsRunning > 0 || (this.entitlements().autoExport && this.exportLane.isScheduled),
       lastExport: this.settings.lastExport,
     };
+  }
+
+  /** "Missing" only when the vault says so; a read that fails is reported as a failure. */
+  private async readCalendarFile(
+    path: string
+  ): Promise<{ state: "present"; contents: string } | { state: "missing" } | { state: "unreadable"; error: string }> {
+    let exists: boolean;
+    try {
+      exists = await this.app.vault.adapter.exists(path);
+    } catch (error) {
+      return { state: "unreadable", error: describeError(error) };
+    }
+    if (!exists) return { state: "missing" };
+    try {
+      return { state: "present", contents: await this.app.vault.adapter.read(path) };
+    } catch (error) {
+      return { state: "unreadable", error: describeError(error) };
+    }
+  }
+
+  /** The export report, built from the preview: what the next export would leave out, now. */
+  private showPreviewReport(): void {
+    void this.preview.get().then((preview) => {
+      const report: ExportReport = {
+        scope: "whole vault",
+        path: normalizePath(this.settings.vaultOutputPath),
+        eventCount: preview.eventCount,
+        totalFound: preview.totalFound,
+        capped: preview.capped,
+        duplicateIds: preview.duplicateIds,
+        skipped: preview.sample,
+        counts: preview.counts,
+        freeLimit: FREE_TASK_LIMIT,
+      };
+      new ExportReportModal(this.app, report, "preview").open();
+    });
   }
 
   private async openTask(item: PreviewItem, newLeaf: boolean | "tab" | "split" | "window"): Promise<void> {
@@ -866,7 +936,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     let preview: CalendarPreview | null = null;
     if (inVaultScope) {
       try {
-        preview = await this.computePreview();
+        preview = await this.preview.get();
       } catch {
         // Without the vault picture the verdict is about this line alone; still worth showing.
       }

@@ -7,8 +7,10 @@ import type { TaskCalendarBridgeSettings } from "../settings/schema";
  * is always the same five questions: which version, free or Pro, which time mode, did the last
  * export fail, what did the report say. This answers them in one paste.
  *
- * It carries settings and counts only — never a task title, a tag, a note name, the vault's
- * name, the licence key, or the publish folder — so it is safe to post in a public issue.
+ * It carries settings, counts and error *categories* only — never a task title, a tag, a note
+ * name, a folder name, the vault's name, the licence key, or the publish folder — so it is safe
+ * to post in a public issue. Error messages are not copied at all: they are written for the
+ * person at the keyboard and name paths, so each one is reduced to a category from a fixed list.
  */
 
 export interface DiagnosticsInput {
@@ -37,7 +39,7 @@ export function buildDiagnostics(input: DiagnosticsInput): string {
   if (!last) {
     lines.push("- Last export: none recorded");
   } else {
-    lines.push(`- Last export: ${last.scope}, ${last.at}${last.error ? `, FAILED: ${scrub(last.error)}` : ""}`);
+    lines.push(`- Last export: ${last.scope}, ${last.at}${last.error ? `, FAILED (${classifyError(last.error)})` : ""}`);
     if (!last.error) {
       lines.push(`- Events: ${last.eventCount} of ${last.totalFound ?? last.eventCount} found; capped ${last.capped ?? 0}; duplicate ids ${last.duplicateIds?.length ?? 0}`);
       if (last.counts) lines.push(`- Skips: ${last.counts.lost} lost, ${last.counts.warnings} warnings, ${last.counts.excluded} excluded`);
@@ -46,7 +48,7 @@ export function buildDiagnostics(input: DiagnosticsInput): string {
       if (reasons.size > 0) {
         lines.push(`- Skip reasons (sampled): ${[...reasons].map(([reason, count]) => `${reason} ×${count}`).join(", ")}`);
       }
-      if (last.publishError) lines.push(`- Publish error: ${scrub(last.publishError)}`);
+      if (last.publishError) lines.push(`- Publish error: ${classifyError(last.publishError)}`);
     }
   }
   return lines.join("\n");
@@ -62,13 +64,29 @@ function countFolders(value: string): string {
 }
 
 /**
- * Error messages name paths. A vault-relative path is fine to share; an absolute one carries the
- * user's account name and folder layout, so it is cut down to its last segment.
+ * Every failure this plugin can record, as a category with no user data in it.
+ *
+ * Redacting paths out of a free-text message was tried first and cannot be made safe: a note
+ * name with spaces in it is indistinguishable from the prose around it. A fixed list can be.
+ * The order matters only where two patterns could both match; the more specific comes first.
  */
-export function scrub(message: string): string {
-  return message
-    .replace(/(?:[A-Za-z]:\\|\\\\)[^\s"'`]*\\([^\\\s"'`]+)/g, "…\\$1")
-    // No lookbehind: it is a syntax error on the older iOS WebKit some Obsidian installs run on,
-    // and a syntax error there takes the whole plugin down at load.
-    .replace(/(^|[\s"'`(])\/(?:[^/\s"'`]+\/)+([^/\s"'`]+)/g, "$1…/$2");
+const ERROR_CATEGORIES: Array<[RegExp, string]> = [
+  [/could not read its settings/i, "settings file unreadable"],
+  [/not created by this plugin/i, "output path belongs to another file"],
+  [/same file|must be different files/i, "output paths are the same file"],
+  [/enter a path for the calendar|must end in \.ics|must stay inside the vault|path cannot contain|cannot start or end with a space/i, "invalid output path"],
+  [/no longer a file in this vault/i, "a note vanished during export"],
+  [/no publish folder|set a publish folder/i, "publish folder not set"],
+  [/not an absolute folder path/i, "publish folder not absolute"],
+  [/only works on desktop|cannot write outside the vault/i, "publishing unavailable on this device"],
+  [/is a pro feature and is no longer running/i, "publishing stopped: licence inactive"],
+  [/could not write to/i, "publish write failed"],
+];
+
+/** A category for an error message, plus its errno code when it carries one (EACCES, EBUSY…). */
+export function classifyError(message: string): string {
+  const errno = /\b(E[A-Z]{2,12})\b/.exec(message)?.[1];
+  const found = ERROR_CATEGORIES.find(([pattern]) => pattern.test(message));
+  const category = found ? found[1] : "other error";
+  return errno ? `${category}, ${errno}` : category;
 }
