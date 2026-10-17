@@ -1,3 +1,4 @@
+import { matchesSignature } from "../core";
 import type { ExternalStore, FileStore, Lifecycle } from "./ports";
 
 /**
@@ -56,7 +57,10 @@ export class CalendarWriter {
     const target = this.vault.normalize(path);
     await this.assertSafeTarget(target);
 
-    if (await this.isCurrent(this.lastWritten.get(target), signature, () => this.vault.exists(target))) {
+    // "Still there" means still holding this calendar, not merely still existing. A file a sync
+    // client rewrote, another device exported over, or someone edited by hand is not current,
+    // and skipping the write left the calendar view saying "out of date" with no way to fix it.
+    if (await this.isCurrent(this.lastWritten.get(target), signature, () => this.holds(target, signature))) {
       return { wrote: false };
     }
 
@@ -94,6 +98,16 @@ export class CalendarWriter {
   private async isCurrent(known: string | undefined, signature: string, stillThere: () => Promise<boolean>): Promise<boolean> {
     if (known !== signature) return false;
     return stillThere();
+  }
+
+  private async holds(target: string, signature: string): Promise<boolean> {
+    try {
+      if (!(await this.vault.exists(target))) return false;
+      return matchesSignature(await this.vault.read(target), signature);
+    } catch {
+      // Cannot tell, so write: a redundant write costs nothing, a skipped one leaves it stale.
+      return false;
+    }
   }
 
   /** Refuse to overwrite a file this plugin did not create. */

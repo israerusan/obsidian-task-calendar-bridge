@@ -145,6 +145,11 @@ export class TaskCalendarView extends ItemView {
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
+      // Hidden during the wait counts too: the sidebar can collapse inside the debounce.
+      if (!this.contentEl.isShown()) {
+        this.stale = true;
+        return;
+      }
       void this.refresh();
     }, delayMs);
   }
@@ -172,8 +177,19 @@ export class TaskCalendarView extends ItemView {
 
   private render(): void {
     const hadGridFocus = this.gridEl?.contains(this.containerEl.doc.activeElement) ?? false;
+    // A background refresh redraws everything; it must not throw away where the reader was.
+    const active = this.containerEl.doc.activeElement;
+    const focusKey = active instanceof HTMLElement && this.contentEl.contains(active) ? active.dataset.focusKey : undefined;
+    const scrollTop = this.contentEl.scrollTop;
     const { contentEl } = this;
     contentEl.empty();
+    this.drawContent(hadGridFocus);
+    contentEl.scrollTop = scrollTop;
+    if (focusKey) contentEl.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus();
+  }
+
+  private drawContent(hadGridFocus: boolean): void {
+    const { contentEl } = this;
 
     this.renderStatus(contentEl);
     const snapshot = this.snapshot;
@@ -201,6 +217,7 @@ export class TaskCalendarView extends ItemView {
     // A button, not a label: every state but "up to date" has one obvious next step, and the
     // pill is where the eye already is.
     const pill = bar.createEl("button", { cls: "tcb-pill" });
+    pill.dataset.focusKey = "pill";
     const dot = pill.createSpan({ cls: "tcb-pill-dot" });
     const label = pill.createSpan({ cls: "tcb-pill-label" });
 
@@ -227,6 +244,15 @@ export class TaskCalendarView extends ItemView {
       state = { cls: "is-busy", text: "Updating…", detail: "An export is running or about to.", action: report };
     } else if (failed) {
       state = { cls: "is-error", text: "Export failed", detail: `${failed} Click to try again.`, action: exportNow };
+    } else if (snapshot.lastExport?.publishError && snapshot.lastExport.path === snapshot.path && this.host.settings.publishEnabled) {
+      // The file in the vault can be perfect while the published copy — the one people actually
+      // subscribe to — has stopped updating. Green would be a lie.
+      state = {
+        cls: "is-error",
+        text: "Publishing failed",
+        detail: `The vault file is written, but the published copy is not: ${snapshot.lastExport.publishError} Click to try again.`,
+        action: exportNow,
+      };
     } else if (snapshot.file === "unreadable") {
       state = {
         cls: "is-error",
@@ -318,6 +344,7 @@ export class TaskCalendarView extends ItemView {
     const navButtons = nav.createDiv({ cls: "tcb-nav-buttons" });
     this.iconButton(navButtons, "chevron-left", "Previous month", () => this.moveMonth(-1));
     const todayButton = navButtons.createEl("button", { text: "Today", cls: "tcb-today-button" });
+    todayButton.dataset.focusKey = "today";
     todayButton.addEventListener("click", () => this.goToday());
     this.iconButton(navButtons, "chevron-right", "Next month", () => this.moveMonth(1));
     this.iconButton(navButtons, "help-circle", "Calendar legend and keys", () => this.showLegend());
@@ -455,6 +482,7 @@ export class TaskCalendarView extends ItemView {
     // A real button inside the list item, so the list keeps its list semantics and the row gets
     // native focus, Enter and Space, rather than a <li> pretending to be a button.
     const open = row.createEl("button", { cls: "tcb-entry-open" });
+    open.dataset.focusKey = `open:${item.uid}:${entry.date}:${task.line}`;
 
     open.createSpan({ cls: "tcb-entry-time", text: entryTime(entry) });
     const body = open.createSpan({ cls: "tcb-entry-body" });
@@ -484,6 +512,7 @@ export class TaskCalendarView extends ItemView {
     open.setAttr("aria-label", `${entryTime(entry)}, ${task.title}${states[item.state]}, in ${note}`);
 
     const more = row.createEl("button", { cls: "clickable-icon tcb-entry-more" });
+    more.dataset.focusKey = `more:${item.uid}:${entry.date}:${task.line}`;
     setIcon(more, "more-vertical");
     more.setAttr("aria-label", `More actions for ${task.title}`);
     setTooltip(more, "More actions");
@@ -593,7 +622,14 @@ export class TaskCalendarView extends ItemView {
 
   private moveMonth(delta: number): void {
     this.month = shiftMonth(this.month.year, this.month.month, delta);
+    this.dropSelectionOutsideMonth();
     this.render();
+  }
+
+  /** The agenda follows the grid: a chosen day in a month no longer on screen is let go. */
+  private dropSelectionOutsideMonth(): void {
+    const prefix = `${this.month.year}-${String(this.month.month).padStart(2, "0")}-`;
+    if (this.selected && !this.selected.startsWith(prefix)) this.selected = null;
   }
 
   private goToday(): void {
@@ -637,6 +673,7 @@ export class TaskCalendarView extends ItemView {
     const [year, month] = target.split("-").map(Number);
     if (year !== this.month.year || month !== this.month.month) {
       this.month = { year, month };
+      this.dropSelectionOutsideMonth();
       this.render();
     } else {
       this.gridEl?.querySelectorAll<HTMLElement>(".tcb-day").forEach((cell) => {
@@ -657,6 +694,7 @@ export class TaskCalendarView extends ItemView {
 
   private iconButton(container: HTMLElement, icon: string, label: string, onClick: (event: MouseEvent) => void): HTMLElement {
     const button = container.createEl("button", { cls: "clickable-icon tcb-icon-button" });
+    button.dataset.focusKey = `icon:${icon}`;
     setIcon(button, icon);
     button.setAttr("aria-label", label);
     setTooltip(button, label);

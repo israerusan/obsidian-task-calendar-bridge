@@ -301,8 +301,8 @@ const settings = (over = {}) => ({
   {
     const vault = makeVault();
     const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
-    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "sig-a"), { wrote: true });
-    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "sig-a"), { wrote: false });
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "ICS-A"), { wrote: true });
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "ICS-A"), { wrote: false });
     assert.equal(vault.log.writes.length, 1, "an identical calendar must not be rewritten");
   }
 
@@ -311,17 +311,37 @@ const settings = (over = {}) => ({
   {
     const vault = makeVault();
     const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
-    await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "sig-a");
+    await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "ICS-A");
     vault.files.delete("Calendar/tasks.ics");
-    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "sig-a"), { wrote: true }, "a deleted calendar must be rewritten");
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "ICS-A"), { wrote: true }, "a deleted calendar must be rewritten");
+  }
+
+  // Unchanged tasks, but the file on disk was rewritten by someone else — a sync client, another
+  // device, a hand edit. The calendar view compares against the disk, so the writer must too, or
+  // "Export" could never clear an "out of date" verdict.
+  {
+    const vault = makeVault();
+    const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
+    await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "ICS-A");
+    vault.files.set("Calendar/tasks.ics", "ICS-A, edited by someone else");
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "ICS-A"), { wrote: true }, "a changed file is rewritten");
+    assert.equal(vault.files.get("Calendar/tasks.ics"), "ICS-A");
+
+    // What a sync client does to line endings and a BOM is not a change worth rewriting for.
+    const crlf = "BEGIN:VCALENDAR\r\nX:1\r\nEND:VCALENDAR\r\n";
+    await writer.writeToVault("Calendar/tasks.ics", crlf, crlf);
+    vault.files.set("Calendar/tasks.ics", "\uFEFF" + crlf.replace(/\r\n/g, "\n"));
+    const before = vault.log.writes.length;
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", crlf, crlf), { wrote: false });
+    assert.equal(vault.log.writes.length, before);
   }
 
   // Changed content always writes.
   {
     const vault = makeVault();
     const writer = new CalendarWriter(vault.port, makeExternal().port, alive, owned());
-    await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "sig-a");
-    await writer.writeToVault("Calendar/tasks.ics", "ICS-B", "sig-b");
+    await writer.writeToVault("Calendar/tasks.ics", "ICS-A", "ICS-A");
+    await writer.writeToVault("Calendar/tasks.ics", "ICS-B", "ICS-B");
     assert.equal(vault.log.writes.length, 2);
   }
 
@@ -718,6 +738,22 @@ const settings = (over = {}) => ({
     const { index } = makeIndex(contents, { limit: 5 });
     for (let i = 0; i < 12; i++) await index.parse({ path: `N${i}.md`, mtime: 1 }, FREE);
     assert.ok(index.size <= 5, `cache grew to ${index.size}`);
+  }
+
+  // Least recently USED goes first: a note read on every walk must not be evicted for being
+  // written early.
+  {
+    const contents = new Map();
+    for (let i = 0; i < 6; i++) contents.set(`N${i}.md`, "- [ ] A [due:: 2026-08-03]");
+    const { index, reads } = makeIndex(contents, { limit: 5 });
+    for (let i = 0; i < 5; i++) await index.parse({ path: `N${i}.md`, mtime: 1 }, FREE);
+    await index.parse({ path: "N0.md", mtime: 1 }, FREE); // a hit, refreshing N0
+    await index.parse({ path: "N5.md", mtime: 1 }, FREE); // evicts N1, not N0
+    const before = reads.length;
+    await index.parse({ path: "N0.md", mtime: 1 }, FREE);
+    assert.equal(reads.length, before, "N0 was used recently and must still be cached");
+    await index.parse({ path: "N1.md", mtime: 1 }, FREE);
+    assert.equal(reads.length, before + 1, "N1 was the least recently used and was evicted");
   }
 }
 

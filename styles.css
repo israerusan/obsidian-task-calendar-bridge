@@ -450,6 +450,13 @@ body {
   opacity: 1;
 }
 
+/* A touch screen on a desktop has no hover and is not .is-mobile: never an invisible target. */
+@media (hover: none), (pointer: coarse) {
+  .tcb-entry-more {
+    opacity: 1;
+  }
+}
+
 .tcb-entry.is-capped .tcb-entry-open,
 .tcb-entry.is-duplicate .tcb-entry-open {
   opacity: 0.6;

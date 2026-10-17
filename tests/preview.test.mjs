@@ -319,7 +319,7 @@ const md = (lines) => lines.join("\n");
 
   const ok = explainLine({ ...base, line: 2 });
   assert.equal(ok.excluded, false);
-  assert.equal(ok.headline, "In your calendar.");
+  assert.equal(ok.headline, "Exports as a calendar event:");
   const rows = Object.fromEntries(ok.rows.map((row) => [row.label, row.value]));
   assert.match(rows.When, /2026-10-20 at 14:15/);
   assert.match(rows.Duration, /30 min \(the default duration\)/);
@@ -348,10 +348,12 @@ const md = (lines) => lines.join("\n");
   assert.match(explainLine({ ...base, line: 2, inVaultScope: false }).headline, /folder filters/);
   assert.match(explainLine({ ...base, line: 2, vaultState: () => "capped" }).headline, /free tier/);
   assert.match(explainLine({ ...base, line: 2, vaultState: () => "duplicate" }).headline, /same identity/);
-  // Keyed by location: the state of line 2 is asked for, not of any task sharing its UID.
+  // Asked by location AND identity, so the caller can tell a shifted line from the same task.
   const asked = [];
-  explainLine({ ...base, line: 2, vaultState: (p, l) => (asked.push(`${p}:${l}`), "exported") });
-  assert.deepEqual(asked, ["Plan.md:2"]);
+  explainLine({ ...base, line: 2, vaultState: (p, l, uid) => (asked.push(`${p}:${l}:${uid.startsWith("tcb-")}`), "exported") });
+  assert.deepEqual(asked, ["Plan.md:2:true"]);
+  // No vault picture at all (the preview failed): still described as an export, never "in your calendar".
+  assert.match(explainLine({ ...base, line: 2, vaultState: () => undefined }).headline, /^Exports as a calendar event/);
 
   assert.equal(isTaskLine("> - [ ] In a callout"), true);
   assert.equal(isTaskLine("- [ ] "), false, "an empty task is not a task");

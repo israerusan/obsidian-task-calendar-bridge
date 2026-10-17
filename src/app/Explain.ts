@@ -1,4 +1,4 @@
-import { explainSkips, explainTask, isTaskLine, parseTasksFromMarkdown, type ExplainOptions, type ExplainRow, type ParseOptions } from "../core";
+import { createUid, explainSkips, explainTask, isTaskLine, parseTasksFromMarkdown, type ExplainOptions, type ExplainRow, type ParseOptions } from "../core";
 import type { PreviewState } from "./CalendarPreview";
 
 /**
@@ -18,10 +18,11 @@ export interface ExplainLineInput {
   /** Whether the folder filters let this note into the whole-vault calendar. */
   inVaultScope: boolean;
   /**
-   * Where the whole-vault export puts the task on a given line. Keyed by location, not UID: two
-   * tasks sharing a UID is exactly the duplicate case, and only one of them is in the file.
+   * Where the whole-vault export puts this task. Given the location AND the identity: line
+   * numbers alone go wrong when the editor holds unsaved lines the preview has not seen, and
+   * identity alone is ambiguous in exactly the duplicate case.
    */
-  vaultState?: (sourcePath: string, line: number) => PreviewState | undefined;
+  vaultState?: (sourcePath: string, line: number, uid: string) => PreviewState | undefined;
   freeLimit: number;
 }
 
@@ -43,9 +44,9 @@ export function explainLine(input: ExplainLineInput): LineExplanation {
 
   if (!task) {
     const fatal = skipped.find((item) => item.fatal);
-    if (fatal) return { headline: `Not in your calendar: ${issues[0]?.label.toLowerCase() ?? "skipped"}.`, excluded: true, rows: [], issues, source };
+    if (fatal) return { headline: `Not exported: ${issues[0]?.label.toLowerCase() ?? "skipped"}.`, excluded: true, rows: [], issues, source };
     if (isTaskLine(source)) {
-      return { headline: "Not in your calendar: this task is inside a code block, so it is treated as an example.", excluded: true, rows: [], issues, source };
+      return { headline: "Not exported: this task is inside a code block, so it is treated as an example.", excluded: true, rows: [], issues, source };
     }
     return { headline: "This line is not a task. Put the cursor on a line such as “- [ ] Call Sam 📅 2026-10-20”.", excluded: true, rows: [], issues, source };
   }
@@ -62,7 +63,7 @@ export function explainLine(input: ExplainLineInput): LineExplanation {
     };
   }
 
-  const state = input.vaultState?.(task.sourcePath, task.line);
+  const state = input.vaultState?.(task.sourcePath, task.line, createUid(task));
   if (state === "capped") {
     return {
       headline: `Not in the vault calendar yet: the free tier exports the next ${input.freeLimit} dated tasks, and this one is further out. Exporting just this note includes it.`,
@@ -82,5 +83,13 @@ export function explainLine(input: ExplainLineInput): LineExplanation {
     };
   }
 
-  return { headline: issues.length > 0 ? "In your calendar, with something on this line ignored." : "In your calendar.", excluded: false, rows, issues, source };
+  // "Exports as", not "is in your calendar": this describes what the next export writes, and the
+  // file on disk may not have been written since the task was.
+  return {
+    headline: issues.length > 0 ? "Exports as a calendar event, with something on this line ignored:" : "Exports as a calendar event:",
+    excluded: false,
+    rows,
+    issues,
+    source,
+  };
 }

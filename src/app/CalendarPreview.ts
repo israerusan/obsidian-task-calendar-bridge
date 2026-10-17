@@ -1,4 +1,4 @@
-import { addDays, compareDates, createUid, icsSignature, occurrencesBetween, type CalendarTask, type DuplicateIdentity, type SkipCounts, type SkippedTask } from "../core";
+import { addDays, compareDates, createUid, matchesSignature, occurrencesBetween, type CalendarTask, type DuplicateIdentity, type SkipCounts, type SkippedTask } from "../core";
 import { buildCalendar, selectForExport, type CalendarOptions } from "./ExportPlan";
 import type { Entitlements } from "./Entitlements";
 
@@ -92,7 +92,7 @@ export function buildPreview(input: PreviewInput): CalendarPreview {
 /** Whether the file on disk already holds what the next export would write. */
 export function isCalendarCurrent(preview: CalendarPreview, fileContents: string | null): boolean {
   if (fileContents === null) return false;
-  return icsSignature(fileContents) === preview.signature;
+  return matchesSignature(fileContents, preview.signature);
 }
 
 export type EntryKind =

@@ -95,3 +95,15 @@ export function sampleSkips(skipped: SkippedTask[]): SkippedTask[] {
 export function icsSignature(ics: string): string {
   return ics.replace(/DTSTAMP:[^\r\n]*/g, "");
 }
+
+/**
+ * Whether a file's contents are the calendar a signature describes.
+ *
+ * Tolerant of exactly the two things a sync client or git does to a text file without changing
+ * what it means: a byte-order mark, and CRLF turned into LF. Without that tolerance the calendar
+ * view called such a file "out of date" forever, and exporting could not fix it.
+ */
+export function matchesSignature(fileContents: string, signature: string): boolean {
+  const normalise = (value: string): string => value.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  return normalise(icsSignature(fileContents)) === normalise(signature);
+}

@@ -61,6 +61,11 @@ export function isNewerVersion(candidate: string, than: string): boolean {
   return false;
 }
 
+/** `1.3.0`, `1.10.2` — the only shape this plugin's versions take. */
+export function isReleaseVersion(value: string): boolean {
+  return /^\d+(?:\.\d+)*$/.test(value);
+}
+
 /** Notes for every release newer than `seen` and no newer than `current`, newest first. */
 export function notesSince(seen: string, current: string): ReleaseNotes[] {
   return RELEASE_NOTES.filter((notes) => isNewerVersion(notes.version, seen) && !isNewerVersion(notes.version, current));

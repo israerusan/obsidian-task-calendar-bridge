@@ -4,6 +4,7 @@ import {
   compareTasks,
   describeAge,
   isNewerVersion,
+  isReleaseVersion,
   isSameFile,
   isTaskLine,
   localToday,
@@ -257,6 +258,8 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         const today = localToday();
         if (today === this.viewDay) return;
         this.viewDay = today;
+        // A new year changes the VTIMEZONE, so a fixed-zone calendar changes at midnight too.
+        if (this.entitlements().autoExport) this.exportLane.schedule();
         // The free tier exports "the next 25 from today", so the preview itself changes.
         this.invalidatePreview();
       }, 60_000)
@@ -297,14 +300,18 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   private checkForUpdateNotes(): void {
     if (this.settingsUnreadable) return;
     const current = this.manifest.version;
-    const seen = this.settings.lastSeenVersion;
+    // A stored value that is not a version — hand-edited, or a pre-release suffix — would never
+    // compare as older than anything, and silenced every future release's notes. It is treated
+    // as unknown instead; the vault was clearly not a fresh install, so it counts as an upgrade.
+    const stored = this.settings.lastSeenVersion;
+    const seen = isReleaseVersion(stored) ? stored : "";
     if (seen && !isNewerVersion(current, seen)) return;
 
     // Installs from before this setting existed have no stored version. Any trace of use marks
     // an upgrade — hasOnboarded only exists since 1.2.0, so a 1.1 install is recognised by its
     // export record, its licence, or the files it owns. None of them means a fresh install.
     const s = this.settings;
-    const upgrading = seen ? true : s.hasOnboarded || s.lastExport !== null || s.licenseKey !== "" || s.ownedPaths.length > 0;
+    const upgrading = seen || stored ? true : s.hasOnboarded || s.lastExport !== null || s.licenseKey !== "" || s.ownedPaths.length > 0;
     const notes = notesSince(seen || "0", current).filter((release) => release.showOnUpdate !== false);
     this.settings.lastSeenVersion = current;
     // An existing user is not a new one: the release notes introduce the calendar, so the
@@ -411,13 +418,18 @@ export default class TaskCalendarBridgePlugin extends Plugin {
    * One walk for both the export and the calendar view, so the view cannot disagree with the
    * file about which notes count.
    */
-  private async collectVaultTasks(options: ParseOptions = this.parseOptions()): Promise<{ tasks: CalendarTask[]; skipped: SkippedTask[] }> {
+  private async collectVaultTasks(
+    options: ParseOptions = this.parseOptions(),
+    filter: FolderFilter = this.folderFilter()
+  ): Promise<{ tasks: CalendarTask[]; skipped: SkippedTask[] }> {
     const tasks: CalendarTask[] = [];
     const skipped: SkippedTask[] = [];
     for (const file of this.app.vault.getMarkdownFiles()) {
       // Checked per note: a walk of a large vault outlives a plugin disabled halfway through it.
       if (this.unloaded) throw new Error("Task Calendar Bridge was disabled.");
-      if (!this.shouldIncludeFile(file.path)) continue;
+      // The filter captured when the walk began, not re-read per note: changing the folders
+      // mid-walk otherwise admits early notes under one filter and later notes under the other.
+      if (!shouldIncludeNote(file.path, filter)) continue;
       const result = await this.notes.parse({ path: file.path, mtime: file.stat.mtime }, options);
       tasks.push(...result.tasks);
       skipped.push(...result.skipped);
@@ -602,8 +614,14 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     this.invalidatePreview();
   }
 
-  flushSettings(): Promise<void> {
-    return this.store.flush();
+  /**
+   * The settings tab closing. With auto-export on, the file is brought in line with whatever was
+   * just changed — the time mode, the calendar name — rather than waiting for the next note edit,
+   * which is what "auto" promises. Not on every save: exports save settings themselves.
+   */
+  async flushSettings(): Promise<void> {
+    await this.store.flush();
+    if (this.entitlements().autoExport) this.exportLane.schedule();
   }
 
   /** What this licence allows, derived in one place rather than at 22 call sites. */
@@ -835,7 +853,8 @@ export default class TaskCalendarBridgePlugin extends Plugin {
     const parseOptions = this.parseOptions();
     const today = localToday();
     const vaultName = this.app.vault.getName();
-    const { tasks, skipped } = await this.collectVaultTasks(parseOptions);
+    const filter = this.folderFilter();
+    const { tasks, skipped } = await this.collectVaultTasks(parseOptions, filter);
     return buildPreview({ tasks, skipped, rights, today, options, vaultName, now: new Date() });
   }
 
@@ -941,8 +960,21 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         // Without the vault picture the verdict is about this line alone; still worth showing.
       }
     }
-    const states = new Map<string, PreviewItem["state"]>();
-    for (const item of preview?.items ?? []) states.set(`${item.task.sourcePath}\n${item.task.line}`, item.state);
+    const byLine = new Map<string, PreviewItem>();
+    const byUid = new Map<string, PreviewItem[]>();
+    for (const item of preview?.items ?? []) {
+      if (item.task.sourcePath !== path) continue;
+      byLine.set(String(item.task.line), item);
+      byUid.set(item.uid, [...(byUid.get(item.uid) ?? []), item]);
+    }
+    // The line first, trusted only when it holds the same task; otherwise the task's identity,
+    // when that is unambiguous. Unsaved lines above the task shift every line number.
+    const stateOf = (taskLine: number, uid: string): PreviewItem["state"] | undefined => {
+      const atLine = byLine.get(String(taskLine));
+      if (atLine && atLine.uid === uid) return atLine.state;
+      const sameId = byUid.get(uid) ?? [];
+      return sameId.length === 1 ? sameId[0].state : undefined;
+    };
 
     const explanation = explainLine({
       markdown,
@@ -957,7 +989,7 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         exportTags: this.settings.exportTags,
       },
       inVaultScope,
-      vaultState: preview ? (sourcePath, taskLine) => states.get(`${sourcePath}\n${taskLine}`) : undefined,
+      vaultState: preview ? (_sourcePath, taskLine, uid) => stateOf(taskLine, uid) : undefined,
       freeLimit: FREE_TASK_LIMIT,
     });
     new ExplainModal(this.app, explanation).open();

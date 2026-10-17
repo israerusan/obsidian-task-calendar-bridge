@@ -23,7 +23,12 @@ export interface ParseIndexOptions {
   limit?: number;
 }
 
-const DEFAULT_LIMIT = 5000;
+/**
+ * Above any realistic vault. The walk visits every note in the same order every time, so a cap
+ * below the vault's size evicts each entry just before it is needed again — at 5,000, a
+ * 6,000-note vault re-read and re-parsed every note on every export and every calendar refresh.
+ */
+const DEFAULT_LIMIT = 50_000;
 
 interface Entry {
   mtime: number;
@@ -44,7 +49,12 @@ export class ParseIndex {
   async parse(note: NoteRef, options: ParseOptions): Promise<ParseResult> {
     const optionsKey = `${options.includeCompleted}|${options.includeRecurrence}|${options.includeReminders}`;
     const cached = this.cache.get(note.path);
-    if (cached && cached.mtime === note.mtime && cached.optionsKey === optionsKey) return cached.result;
+    if (cached && cached.mtime === note.mtime && cached.optionsKey === optionsKey) {
+      // Re-inserted, so eviction drops the least recently USED entry, not the oldest written.
+      this.cache.delete(note.path);
+      this.cache.set(note.path, cached);
+      return cached.result;
+    }
 
     // Sample the mtime BEFORE reading. Reading it afterwards paired the new mtime with old
     // content when the note changed mid-export, caching stale tasks against a fresh stamp.
