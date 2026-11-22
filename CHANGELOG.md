@@ -5,11 +5,27 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [1.3.1] - 2026-11-22
 
-A fixes-only release from an outside review (Grok and GitHub Copilot). Event
-identity is untouched: no event changes UID, so nothing is duplicated in a
+A fixes-only release from an outside review (Grok, GitHub Copilot and Codex).
+Event identity is untouched: no event changes UID, so nothing is duplicated in a
 calendar you have already imported.
 
 ### Fixed
+
+- **Wrong daylight-saving dates in a few fixed time zones.** The yearly rule
+  written into the file was checked against three years only, and four zones
+  passed by coincidence with a rule that is wrong in other years: Israel
+  (`Asia/Jerusalem` — "last Friday of March" instead of "the Friday before the
+  last Sunday", a week early in 2028), Chile (`America/Santiago`), and
+  Greenland (`America/Nuuk`, `America/Scoresbysund`). Timed events in those
+  zones were an hour out for part of the spring in the affected years. Rules
+  are now checked across twelve years and written in the form the zone actually
+  follows. Egypt (`Africa/Cairo`), whose autumn change can fall on 1 November,
+  cannot be described by a single yearly rule at all and now uses the same safe
+  fallback as other irregular zones (exact instants for one-off events).
+- **Old repeating timed tasks in a fixed time zone.** A repeating task that
+  started before last year named a zone whose definition in the file began
+  after its first occurrences. The definition now reaches back to the oldest
+  repeating timed task — as far as the zone's current rules held.
 
 - **A published calendar overwritten by another device stayed stale.** The copy
   outside the vault was skipped whenever the file merely *existed*. A second
@@ -29,9 +45,9 @@ calendar you have already imported.
   years are now written as their exact UTC instant.
   Repeating events keep the zone, so they still follow daylight-saving changes.
 - **An export in flight when the plugin was disabled could still write.** The
-  vault write, and every step of publishing (folder creation, temp file,
-  rename), now stop once the plugin is disabled, and concurrent publishes no
-  longer share one temporary file name.
+  vault write and its folder creation, and every step of publishing (folder,
+  temp file, rename), now stop once the plugin is disabled, and concurrent
+  publishes no longer share one temporary file name.
 
 ## [1.3.0] - 2026-10-17
 

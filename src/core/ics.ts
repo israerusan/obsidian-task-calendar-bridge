@@ -1,5 +1,5 @@
 import { addDays, compactDate, formatFloatingDateTime, formatUtcStamp, formatZonedDateTimeAsUtc } from "./dates";
-import { buildVtimezone } from "./timezone";
+import { buildZoneDefinition } from "./timezone";
 import type { CalendarTask, IcsOptions } from "./types";
 
 export interface IcsResult {
@@ -195,9 +195,8 @@ interface ResolvedZone {
   tzid: string;
   component: string[];
   /**
-   * The first date the VTIMEZONE's observances are guaranteed to cover. They start at the
-   * previous year's first transition, so everything from 1 January of the anchor year on is
-   * inside them; a date before that has no observance in force at all.
+   * The first date the VTIMEZONE's observances are guaranteed to cover (see ZoneDefinition). A
+   * date before it has no observance in force at all.
    */
   coversFrom: string;
 }
@@ -205,11 +204,13 @@ interface ResolvedZone {
 /**
  * Whether a task may be written as `TZID=<zone>` wall time.
  *
- * A one-off timed event from two years ago, written with a TZID whose observances only begin
- * last year, has no defined offset: RFC 5545 leaves it to the client, and clients disagree.
- * Such an event is pinned to its exact UTC instant instead — Intl knows the historical offset,
- * so that is never wrong. A repeating event always keeps the TZID: its future occurrences are
- * the ones that matter, and a UTC-pinned series drifts an hour at every DST change.
+ * A one-off timed event older than the VTIMEZONE's observances has no defined offset: RFC 5545
+ * leaves it to the client, and clients disagree. Such an event is pinned to its exact UTC
+ * instant instead — Intl knows the historical offset, so that is never wrong. A repeating event
+ * always keeps the TZID: the observances are extended back to cover the oldest one (see
+ * resolveZone), its future occurrences are the ones that matter, and a UTC-pinned series drifts
+ * an hour at every DST change. Only a series older than a rule change in its zone — which the
+ * observances deliberately do not paint over — is left to the client's own zone data.
  */
 function coveredByZone(task: CalendarTask, zone: ResolvedZone): boolean {
   return Boolean(task.recurrence) || task.date >= zone.coversFrom;
@@ -223,12 +224,21 @@ function resolveZone(tasks: CalendarTask[], options: IcsOptions, now: Date): Res
   // Anchoring on the earliest meant one stray 2019 task described the whole
   // calendar with 2019's rules — and a zone that has changed its rules since
   // then would have put every one of today's events at the wrong instant.
-  // buildVtimezone only returns a rule it has checked holds in the next year
-  // too, so the yearly RRULE carries it forward safely from here.
+  // The zone only returns a rule it has checked across the following decade, so
+  // the yearly RRULE carries it forward safely from here.
+  //
+  // The observances' START is a separate question from the rule: they have to
+  // reach back to the oldest repeating timed task, or its first occurrences name
+  // a zone with no observance in force. One-off events need no such reach — an
+  // old one is written as an exact UTC instant instead.
   const year = now.getUTCFullYear();
-  const component = buildVtimezone(options.timeZone, year);
-  if (!component) return undefined;
-  return { tzid: options.timeZone, component, coversFrom: `${year}-01-01` };
+  let earliestYear = year - 1;
+  for (const task of tasks) {
+    if (task.startTime && task.recurrence) earliestYear = Math.min(earliestYear, Number(task.date.slice(0, 4)));
+  }
+  const zone = buildZoneDefinition(options.timeZone, year, earliestYear);
+  if (!zone) return undefined;
+  return { tzid: options.timeZone, component: zone.lines, coversFrom: zone.coversFrom };
 }
 
 function formatDateTime(

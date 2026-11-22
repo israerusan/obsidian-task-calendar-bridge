@@ -404,6 +404,20 @@ const settings = (over = {}) => ({
     assert.deepEqual(await writer.writeToVault("A/tasks.ics", "ICS", "sig"), { wrote: false });
     assert.equal(vault.log.writes.length, 0, "no write after the instance died creating folders");
   }
+  {
+    // Disabled while checking whether the first folder exists: the dead instance must not go on
+    // to create it, or the levels under it.
+    const vault = makeVault();
+    let living = true;
+    const realExists = vault.port.exists;
+    vault.port.exists = async (p) => {
+      if (p === "A") living = false;
+      return realExists(p);
+    };
+    const writer = new CalendarWriter(vault.port, makeExternal().port, { alive: () => living }, owned());
+    assert.deepEqual(await writer.writeToVault("A/B/tasks.ics", "ICS", "sig"), { wrote: false });
+    assert.deepEqual(vault.log.mkdirs, [], "no folder created after the instance died");
+  }
 
   // Ownership is recorded, so the guard above does not fire on our own file next time.
   {

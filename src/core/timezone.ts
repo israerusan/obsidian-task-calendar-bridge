@@ -100,14 +100,17 @@ function yearlyRule(at: number, fromOffsetMinutes: number): string {
 }
 
 /**
- * Whether another year's transitions are described by the same yearly rule:
- * the same nth weekday, the same offsets, and the same wall-clock time of day.
+ * Whether another year's transitions have the same shape as the anchor year's: as many of them,
+ * the same offsets, the same month and weekday, and the same wall-clock time of day. Shape alone
+ * does not fix the day of the month — that is what `ruleFor` derives across all the years.
  */
-function matchesRule(anchor: Transition[], other: Transition[] | undefined): boolean {
+function sameShape(anchor: Transition[], other: Transition[] | undefined): boolean {
   if (other === undefined || other.length !== anchor.length) return false;
   for (let i = 0; i < anchor.length; i++) {
     if (anchor[i].from !== other[i].from || anchor[i].to !== other[i].to) return false;
-    if (yearlyRule(anchor[i].at, anchor[i].from) !== yearlyRule(other[i].at, other[i].from)) return false;
+    const a = new Date(anchor[i].at + anchor[i].from * MIN_MS);
+    const o = new Date(other[i].at + other[i].from * MIN_MS);
+    if (a.getUTCMonth() !== o.getUTCMonth() || a.getUTCDay() !== o.getUTCDay()) return false;
     // The time of day has to match too, or the rule reproduces the right date at
     // the wrong hour. localStamp is YYYYMMDDTHHMMSS, so slice(8) is the time.
     if (localStamp(anchor[i].at, anchor[i].from).slice(8) !== localStamp(other[i].at, other[i].from).slice(8)) return false;
@@ -115,68 +118,156 @@ function matchesRule(anchor: Transition[], other: Transition[] | undefined): boo
   return true;
 }
 
-/** Memoised: an export asks for the same zone and year every time. */
-const CACHE = new Map<string, string[] | undefined>();
+/**
+ * One yearly RRULE that reproduces the `index`th transition in every one of `years`, or undefined.
+ *
+ * Two forms, because zones are written both ways. Most are an nth (or last) weekday of a month —
+ * `BYDAY=2SU`, `BYDAY=-1SU`. Some are "the weekday on or after a day of the month": Israel starts
+ * daylight time on the Friday before the last Sunday of March, which is the last Friday in some
+ * years and not in others (2026: 27 March, the last Friday; 2028: 24 March, a week before the last
+ * Friday). Three consecutive years can agree with `-1FR` by accident; the dates across the whole
+ * verified span cannot, and they pin the window — `BYMONTHDAY=23,…,29;BYDAY=FR` — exactly.
+ */
+function ruleFor(index: number, years: Transition[][]): string | undefined {
+  const anchor = years[0][index];
+  const nth = yearlyRule(anchor.at, anchor.from);
+  if (years.every((transitions) => yearlyRule(transitions[index].at, transitions[index].from) === nth)) return nth;
+
+  const days = years.map((transitions) => new Date(transitions[index].at + transitions[index].from * MIN_MS).getUTCDate());
+  const first = Math.max(...days) - 6;
+  if (first < 1 || Math.min(...days) < first) return undefined;
+  const d = new Date(anchor.at + anchor.from * MIN_MS);
+  const window = Array.from({ length: 7 }, (_, i) => first + i).join(",");
+  return `FREQ=YEARLY;BYMONTH=${d.getUTCMonth() + 1};BYDAY=${WEEKDAY_CODES[d.getUTCDay()]};BYMONTHDAY=${window}`;
+}
+
+/**
+ * How far ahead a rule must hold before it is written as an unbounded yearly RRULE. Three years
+ * was not enough to tell "last Friday" from "Friday before the last Sunday"; twelve cover every
+ * alignment of weekdays to dates, so a rule that survives them is the zone's rule, not a
+ * coincidence. A change the tz database already knows about inside the span fails the check too.
+ */
+const FORWARD_YEARS = 10;
+/** How far back observances may start for an old repeating task. */
+const MAX_BACK_YEARS = 30;
+
+/** Memoised per zone and year: every export asks the same questions. */
+const YEAR_CACHE = new Map<string, Transition[] | undefined>();
+const CACHE = new Map<string, ZoneDefinition | undefined>();
+
+function transitionsIn(timeZone: string, year: number): Transition[] | undefined {
+  const key = `${timeZone}|${year}`;
+  if (YEAR_CACHE.has(key)) return YEAR_CACHE.get(key);
+  const found = findTransitions(timeZone, Date.UTC(year, 0, 1), Date.UTC(year + 1, 0, 1));
+  YEAR_CACHE.set(key, found);
+  return found;
+}
+
+export interface ZoneDefinition {
+  /** The VTIMEZONE component, BEGIN to END. */
+  lines: string[];
+  /**
+   * The first date (`YYYY-MM-DD`) its observances are guaranteed to cover. They begin at the first
+   * transition of their start year, so everything from 1 January of the following year is inside
+   * them (from 1 January of the start year itself for a zone with no transitions).
+   */
+  coversFrom: string;
+}
 
 /**
  * A VTIMEZONE for `timeZone` describing the rules in force during `year`, or
- * undefined when the zone is unknown or its year is irregular enough that a
- * yearly rule would misdescribe it. The caller falls back to UTC instants there.
+ * undefined when the zone is unknown or its rules are too irregular to describe
+ * with a yearly rule. The caller falls back to UTC instants there.
  */
 export function buildVtimezone(timeZone: string, year: number): string[] | undefined {
+  return buildZoneDefinition(timeZone, year)?.lines;
+}
+
+/**
+ * The VTIMEZONE plus the span it covers.
+ *
+ * `earliestYear` asks for observances reaching back that far — the year of the oldest repeating
+ * timed task, whose first occurrences would otherwise name a zone with no observance in force.
+ * They reach back only as far as the current rule actually held: a zone that changed its rules
+ * (the US in 2007) is described from the change onward, never with today's rule painted over a
+ * past it does not match.
+ */
+export function buildZoneDefinition(timeZone: string, year: number, earliestYear: number = year - 1): ZoneDefinition | undefined {
   if (!timeZone) return undefined;
-  // Probing a zone costs a few hundred Intl formatter calls on the main thread;
-  // an export asks the same question every time it runs.
-  const key = `${timeZone}|${year}`;
+  const floor = Math.max(Math.min(earliestYear, year - 1), year - 1 - MAX_BACK_YEARS);
+  // Probing a zone costs a few hundred Intl formatter calls per year on the main
+  // thread; an export asks the same question every time it runs.
+  const key = `${timeZone}|${year}|${floor}`;
   if (CACHE.has(key)) return CACHE.get(key);
-  const built = computeVtimezone(timeZone, year);
+  const built = computeZoneDefinition(timeZone, year, floor);
   CACHE.set(key, built);
   return built;
 }
 
-function computeVtimezone(timeZone: string, year: number): string[] | undefined {
-  const start = Date.UTC(year, 0, 1);
-  const end = Date.UTC(year + 1, 0, 1);
-  const transitions = findTransitions(timeZone, start, end);
-  if (transitions === undefined) return undefined;
-
-  // A zone that never changes offset: one STANDARD component, no rule.
-  // Dated a year back for the same reason the DST pair is — an observance only
-  // applies from its DTSTART onward, and an event can predate the anchor year.
-  if (transitions.length === 0) {
-    const offset = zoneOffsetMinutes(start, timeZone);
-    if (offset === undefined) return undefined;
-    return [
-      "BEGIN:VTIMEZONE",
-      `TZID:${timeZone}`,
-      "BEGIN:STANDARD",
-      `DTSTART:${year - 1}0101T000000`,
-      `TZOFFSETFROM:${offsetValue(offset)}`,
-      `TZOFFSETTO:${offsetValue(offset)}`,
-      "END:STANDARD",
-      "END:VTIMEZONE",
-    ];
-  }
-
-  if (transitions.length !== 2) return undefined;
+function computeZoneDefinition(timeZone: string, year: number, floor: number): ZoneDefinition | undefined {
+  const anchor = transitionsIn(timeZone, year);
+  if (anchor === undefined) return undefined;
+  // Exactly a DST pair, or no change at all. Anything else is an irregular year
+  // (a zone that changed its rules, or one whose transitions follow a lunar
+  // calendar — Morocco suspends DST for Ramadan) and is not a yearly rule.
+  if (anchor.length !== 0 && anchor.length !== 2) return undefined;
 
   // A yearly rule inferred from one year's dates is a guess until it is checked.
-  // Zones whose transitions follow a lunar calendar (Morocco and Iran have both
-  // done this) produce a perfectly plausible "third Sunday in March" that is
-  // simply wrong in every other year, and the resulting VTIMEZONE would put
-  // events an hour out for a whole DST season. Check the years either side, and
-  // fall back to resolved UTC instants when the rule does not hold in all three.
-  const previous = findTransitions(timeZone, Date.UTC(year - 1, 0, 1), Date.UTC(year, 0, 1));
-  const next = findTransitions(timeZone, Date.UTC(year + 1, 0, 1), Date.UTC(year + 2, 0, 1));
-  if (!matchesRule(transitions, previous) || !matchesRule(transitions, next)) return undefined;
+  // Zones whose transitions follow a lunar calendar produce a perfectly plausible
+  // "third Sunday in March" that is simply wrong in other years, and the resulting
+  // VTIMEZONE would put events an hour out for a whole DST season. Check the
+  // whole span, and fall back to resolved UTC instants when the rule does not hold.
+  const forward: Transition[][] = [];
+  for (let y = year - 1; y <= year + FORWARD_YEARS; y++) {
+    const transitions = transitionsIn(timeZone, y);
+    if (!sameShape(anchor, transitions)) return undefined;
+    forward.push(transitions as Transition[]);
+  }
+
+  // Observances start a year before the anchor at the latest: an observance only applies from its
+  // DTSTART onward, and anchoring on the current year left everything before this year's first
+  // transition with no observance at all. Further back when an old repeating task needs it, for
+  // as long as the zone's rule held.
+  let start = year - 1;
+  let years = forward;
+  while (start - 1 >= floor) {
+    const earlier = transitionsIn(timeZone, start - 1);
+    if (!sameShape(anchor, earlier)) break;
+    years = [earlier as Transition[], ...years];
+    start--;
+  }
+
+  if (anchor.length === 0) {
+    const offset = zoneOffsetMinutes(Date.UTC(year, 0, 1), timeZone);
+    if (offset === undefined) return undefined;
+    return {
+      lines: [
+        "BEGIN:VTIMEZONE",
+        `TZID:${timeZone}`,
+        "BEGIN:STANDARD",
+        `DTSTART:${start}0101T000000`,
+        `TZOFFSETFROM:${offsetValue(offset)}`,
+        `TZOFFSETTO:${offsetValue(offset)}`,
+        "END:STANDARD",
+        "END:VTIMEZONE",
+      ],
+      coversFrom: `${start}-01-01`,
+    };
+  }
+
+  // The rule has to reproduce every year from the start onward. Reaching back can stretch a
+  // window past seven days where the forward span alone fits one; then the old years are
+  // dropped rather than the zone.
+  let rules = anchor.map((_, i) => ruleFor(i, years));
+  if (rules.some((rule) => rule === undefined) && start < year - 1) {
+    start = year - 1;
+    years = forward;
+    rules = anchor.map((_, i) => ruleFor(i, years));
+  }
+  if (rules.some((rule) => rule === undefined)) return undefined;
 
   const lines = ["BEGIN:VTIMEZONE", `TZID:${timeZone}`];
-  // DTSTART comes from the EARLIER year, not the anchor year. An observance only
-  // applies from its DTSTART onward, so anchoring both on the current year left
-  // any event between 1 January and that year's first transition referring to a
-  // zone with no observance covering it. Starting a year earlier closes the gap,
-  // and the yearly rule — now verified across three years — carries it forward.
-  for (const transition of previous as Transition[]) {
+  years[0].forEach((transition, i) => {
     // Southern-hemisphere zones enter daylight time in October, so the pair is
     // ordered by which direction the offset moves, never by which comes first.
     const daylight = transition.to > transition.from;
@@ -184,9 +275,9 @@ function computeVtimezone(timeZone: string, year: number): string[] | undefined 
     lines.push(`DTSTART:${localStamp(transition.at, transition.from)}`);
     lines.push(`TZOFFSETFROM:${offsetValue(transition.from)}`);
     lines.push(`TZOFFSETTO:${offsetValue(transition.to)}`);
-    lines.push(`RRULE:${yearlyRule(transition.at, transition.from)}`);
+    lines.push(`RRULE:${rules[i] as string}`);
     lines.push(daylight ? "END:DAYLIGHT" : "END:STANDARD");
-  }
+  });
   lines.push("END:VTIMEZONE");
-  return lines;
+  return { lines, coversFrom: `${start + 1}-01-01` };
 }

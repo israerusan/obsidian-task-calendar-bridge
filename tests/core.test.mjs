@@ -37,6 +37,7 @@ const {
   foldIcsLine,
   FREE_TASK_LIMIT,
   buildVtimezone,
+  buildZoneDefinition,
   escapeIcsText,
   localToday,
   shouldIncludeNote,
@@ -655,6 +656,7 @@ const ics = (tasks, overrides = {}) => generateIcsCalendar(tasks, { ...ICS_OPTIO
   assert.ok(old.includes("DTSTART:20240704T133000Z"), "a one-off older than the zone's coverage is an exact UTC instant");
   assert.ok(!old.includes("DTSTART;TZID=America/New_York:20240704T093000"));
   assert.ok(old.includes("DTSTART;TZID=America/New_York:20240805T090000"), "an old repeating event stays bound to its zone");
+  assert.ok(old.includes("DTSTART:20240310T020000"), "and the VTIMEZONE reaches back to cover its first occurrence");
   assert.ok(old.includes("DTSTART;TZID=America/New_York:20260102T093000"), "an event inside the coverage keeps its TZID");
 
   // Local wall time means exactly that: no TZID, no VTIMEZONE, no zone hint.
@@ -730,6 +732,36 @@ const ics = (tasks, overrides = {}) => generateIcsCalendar(tasks, { ...ICS_OPTIO
   // March" is right in 2026 and wrong in 2027 — the generator must decline
   // rather than ship a rule that puts events an hour out for a whole season.
   assert.equal(buildVtimezone("Africa/Casablanca", 2026), undefined, "an irregular zone must fall back, not guess");
+
+  // Three years can agree with the wrong rule by accident. Israel starts DST on the Friday before
+  // the last Sunday of March: the last Friday in 2025-2027, but 24 March in 2028, a week before
+  // the last Friday. `-1FR` passed a three-year check and put a whole spring an hour out; the
+  // window form is the zone's actual rule.
+  {
+    const jerusalem = (buildVtimezone("Asia/Jerusalem", 2026) ?? []).join("\n");
+    assert.ok(jerusalem.includes("RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=FR;BYMONTHDAY=23,24,25,26,27,28,29"), jerusalem);
+    assert.ok(!jerusalem.includes("BYDAY=-1FR"));
+    // Chile: the Sunday from the 2nd to the 8th, which is not "the first Sunday" when the 1st is one.
+    const santiago = (buildVtimezone("America/Santiago", 2026) ?? []).join("\n");
+    assert.ok(santiago.includes("BYMONTH=4;BYDAY=SU;BYMONTHDAY=2,3,4,5,6,7,8"), santiago);
+    // Egypt leaves DST at Thursday 24:00, which is 1 November in years like 2030: no single
+    // October rule describes it, and the old "last Friday of October" was a week early there.
+    assert.equal(buildVtimezone("Africa/Cairo", 2026), undefined, "a rule that crosses a month boundary must fall back");
+  }
+
+  // An old repeating task needs observances reaching back to its first occurrence — but only as
+  // far as the zone's current rule held. The US moved its DST dates in 2007; describing 2003
+  // with today's rule would be inventing history.
+  {
+    const back = buildZoneDefinition("America/New_York", 2026, 2024);
+    assert.ok(back.lines.includes("DTSTART:20240310T020000"), back.lines.join("\n"));
+    assert.equal(back.coversFrom, "2025-01-01");
+    const ruleChange = buildZoneDefinition("America/New_York", 2026, 2003);
+    assert.ok(ruleChange.lines.includes("DTSTART:20070311T020000"), "starts at the 2007 rule change, not before");
+    assert.equal(ruleChange.coversFrom, "2008-01-01");
+    assert.deepEqual(buildZoneDefinition("America/New_York", 2026).lines, buildVtimezone("America/New_York", 2026), "the default reaches back one year");
+    assert.equal(buildZoneDefinition("America/New_York", 2026).coversFrom, "2026-01-01");
+  }
 
   // Every observance must start BEFORE the year the calendar is about, or an
   // event in January refers to a zone with no observance covering it.

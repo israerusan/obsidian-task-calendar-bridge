@@ -32,8 +32,8 @@ export const RELEASE_NOTES: ReleaseNotes[] = [
         body: "A published calendar overwritten by another device is now repaired on the next export, and a phone no longer reports a publishing failure for a setting switched on at your desktop.",
       },
       {
-        title: "Older timed events in a fixed time zone",
-        body: "One-off timed tasks from previous years are written as exact instants, so every calendar app shows them at the right time.",
+        title: "Time-zone fixes",
+        body: "Correct daylight-saving dates for Israel, Chile and Greenland in fixed-time-zone mode, and older timed tasks now land at the right time in every calendar app.",
       },
     ],
   },

@@ -159,7 +159,10 @@ export class CalendarWriter {
     let current = "";
     for (const part of parts) {
       current = current ? `${current}/${part}` : part;
-      if (!(await this.vault.exists(current))) await this.vault.mkdir(current);
+      const exists = await this.vault.exists(current);
+      // Each level is its own await: a plugin disabled mid-way must not go on creating folders.
+      if (!this.lifecycle.alive()) return;
+      if (!exists) await this.vault.mkdir(current);
     }
   }
 }
