@@ -3,6 +3,36 @@
 All notable changes to Task Calendar Bridge are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-11-22
+
+A fixes-only release from an outside review (Grok and GitHub Copilot). Event
+identity is untouched: no event changes UID, so nothing is duplicated in a
+calendar you have already imported.
+
+### Fixed
+
+- **A published calendar overwritten by another device stayed stale.** The copy
+  outside the vault was skipped whenever the file merely *existed*. A second
+  desktop publishing the same vault to the same synced folder — or exporting
+  before its notes finished syncing — could replace it, and it stayed that way
+  until your tasks next changed. The published copy is now compared by content,
+  exactly like the file in the vault, and repaired on the next export.
+- **Phones reported a publishing failure on every export.** The publish toggle
+  syncs with the vault, so switching it on at a desktop made every export on a
+  phone or tablet fail to publish — with the toggle disabled there, so it could
+  not be switched off. Devices that cannot write outside the vault now leave
+  publishing to the desktop, silently.
+- **Old one-off timed events in a fixed time zone.** The time-zone definition in
+  the file only begins at last year's first daylight-saving change, so a timed
+  task dated earlier named a zone with no rule in force for its date, and
+  calendar apps disagreed about its time. One-off timed tasks from previous
+  years are now written as their exact UTC instant.
+  Repeating events keep the zone, so they still follow daylight-saving changes.
+- **An export in flight when the plugin was disabled could still write.** The
+  vault write, and every step of publishing (folder creation, temp file,
+  rename), now stop once the plugin is disabled, and concurrent publishes no
+  longer share one temporary file name.
+
 ## [1.3.0] - 2026-10-17
 
 The calendar comes into the vault. Until now the only way to see what your

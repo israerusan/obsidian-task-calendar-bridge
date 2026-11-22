@@ -56,6 +56,10 @@ export class CalendarWriter {
     if (!this.lifecycle.alive()) return { wrote: false };
     const target = this.vault.normalize(path);
     await this.assertSafeTarget(target);
+    // Re-checked after every await, as the Lifecycle port promises: the plugin can be disabled
+    // while any of these reads is in flight, and a write after that lands in a vault whose new
+    // instance may already have written its own calendar.
+    if (!this.lifecycle.alive()) return { wrote: false };
 
     // "Still there" means still holding this calendar, not merely still existing. A file a sync
     // client rewrote, another device exported over, or someone edited by hand is not current,
@@ -63,15 +67,18 @@ export class CalendarWriter {
     if (await this.isCurrent(this.lastWritten.get(target), signature, () => this.holds(target, signature))) {
       return { wrote: false };
     }
+    if (!this.lifecycle.alive()) return { wrote: false };
 
     await this.ensureParentFolder(target);
+    if (!this.lifecycle.alive()) return { wrote: false };
     await this.vault.write(target, ics);
     this.lastWritten.set(target, signature);
     if (!this.ownedPaths.has(target)) this.ownedPaths.add(target);
     return { wrote: true };
   }
 
-  async publish(target: PublishTarget, ics: string, signature: string): Promise<string> {
+  /** The full path published, or undefined when the instance died before it could write. */
+  async publish(target: PublishTarget, ics: string, signature: string): Promise<string | undefined> {
     if (!target.folder.trim()) throw new Error("Publishing is on but no publish folder is set.");
     if (!this.external.available()) throw new Error("Publishing outside the vault only works on desktop.");
 
@@ -79,11 +86,19 @@ export class CalendarWriter {
     // rather than being mistaken for "already up to date".
     const key = `${target.folder.trim()} :: ${target.fileName}`;
     const known = this.lastPublished.get(key);
-    if (known && (await this.isCurrent(known.signature, signature, () => this.external.exists(known.path)))) {
+    // "Still there" means still holding this calendar, exactly as for the vault file. A second
+    // desktop publishing the same vault to the same synced folder — or exporting before its notes
+    // finished syncing — overwrites the copy, and checking only that the file existed left the
+    // feed everyone subscribes to stale until the tasks happened to change again.
+    if (known && (await this.isCurrent(known.signature, signature, () => this.holdsPublished(known.path, signature)))) {
       return known.path;
     }
+    if (!this.lifecycle.alive()) return undefined;
 
-    const written = await this.external.write(target.folder, target.fileName, ics);
+    // The liveness check travels into the adapter, which awaits mkdir, the temp write and the
+    // rename in turn — checking only here left all three to run for a disabled instance.
+    const written = await this.external.write(target.folder, target.fileName, ics, () => this.lifecycle.alive());
+    if (written === undefined) return undefined;
     this.lastPublished.set(key, { signature, path: written });
     return written;
   }
@@ -106,6 +121,15 @@ export class CalendarWriter {
       return matchesSignature(await this.vault.read(target), signature);
     } catch {
       // Cannot tell, so write: a redundant write costs nothing, a skipped one leaves it stale.
+      return false;
+    }
+  }
+
+  private async holdsPublished(fullPath: string, signature: string): Promise<boolean> {
+    try {
+      const contents = await this.external.read(fullPath);
+      return contents !== undefined && matchesSignature(contents, signature);
+    } catch {
       return false;
     }
   }

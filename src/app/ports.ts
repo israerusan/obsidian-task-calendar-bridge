@@ -23,9 +23,13 @@ export interface FileStore {
 export interface ExternalStore {
   /** False on mobile, where there is no filesystem to reach. */
   available(): boolean;
-  exists(fullPath: string): Promise<boolean>;
-  /** Returns the full path written. Throws with a message meant for a Notice. */
-  write(folder: string, fileName: string, contents: string): Promise<string>;
+  /** The published file's contents, or undefined when it is missing or unreadable. */
+  read(fullPath: string): Promise<string | undefined>;
+  /**
+   * Returns the full path written, or undefined when `alive` turned false between the
+   * filesystem steps and the write was abandoned. Throws with a message meant for a Notice.
+   */
+  write(folder: string, fileName: string, contents: string, alive: () => boolean): Promise<string | undefined>;
 }
 
 /**

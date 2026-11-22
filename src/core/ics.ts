@@ -44,7 +44,7 @@ export function generateIcsCalendar(tasks: CalendarTask[], options: IcsOptions, 
       continue;
     }
     seen.add(uid);
-    lines.push(...taskToEventLines(task, options, stamp, uid, zone?.tzid));
+    lines.push(...taskToEventLines(task, options, stamp, uid, zone && coveredByZone(task, zone) ? zone.tzid : undefined));
     eventCount++;
   }
 
@@ -191,7 +191,31 @@ function buildAlarm(task: CalendarTask, options: IcsOptions, timed: boolean): st
  * yearly rule — in all of which cases `formatDateTime` falls back to the 1.1.0
  * behaviour of a resolved UTC instant.
  */
-function resolveZone(tasks: CalendarTask[], options: IcsOptions, now: Date): { tzid: string; component: string[] } | undefined {
+interface ResolvedZone {
+  tzid: string;
+  component: string[];
+  /**
+   * The first date the VTIMEZONE's observances are guaranteed to cover. They start at the
+   * previous year's first transition, so everything from 1 January of the anchor year on is
+   * inside them; a date before that has no observance in force at all.
+   */
+  coversFrom: string;
+}
+
+/**
+ * Whether a task may be written as `TZID=<zone>` wall time.
+ *
+ * A one-off timed event from two years ago, written with a TZID whose observances only begin
+ * last year, has no defined offset: RFC 5545 leaves it to the client, and clients disagree.
+ * Such an event is pinned to its exact UTC instant instead — Intl knows the historical offset,
+ * so that is never wrong. A repeating event always keeps the TZID: its future occurrences are
+ * the ones that matter, and a UTC-pinned series drifts an hour at every DST change.
+ */
+function coveredByZone(task: CalendarTask, zone: ResolvedZone): boolean {
+  return Boolean(task.recurrence) || task.date >= zone.coversFrom;
+}
+
+function resolveZone(tasks: CalendarTask[], options: IcsOptions, now: Date): ResolvedZone | undefined {
   if (options.timeMode !== "zoned" || !options.timeZone) return undefined;
   if (!tasks.some((task) => task.startTime)) return undefined;
 
@@ -201,9 +225,10 @@ function resolveZone(tasks: CalendarTask[], options: IcsOptions, now: Date): { t
   // then would have put every one of today's events at the wrong instant.
   // buildVtimezone only returns a rule it has checked holds in the next year
   // too, so the yearly RRULE carries it forward safely from here.
-  const component = buildVtimezone(options.timeZone, now.getUTCFullYear());
+  const year = now.getUTCFullYear();
+  const component = buildVtimezone(options.timeZone, year);
   if (!component) return undefined;
-  return { tzid: options.timeZone, component };
+  return { tzid: options.timeZone, component, coversFrom: `${year}-01-01` };
 }
 
 function formatDateTime(

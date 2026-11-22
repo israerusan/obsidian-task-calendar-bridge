@@ -278,7 +278,7 @@ const settings = (over = {}) => ({
       log,
       port: {
         available: () => true,
-        exists: async (p) => files.has(p),
+        read: async (p) => files.get(p),
         write: async (folder, fileName, contents) => {
           const full = `${folder}/${fileName}`;
           log.writes.push(full);
@@ -378,6 +378,33 @@ const settings = (over = {}) => ({
     assert.equal(vault.log.writes.length, 0);
   }
 
+  // Disabled while a read was in flight: the liveness check at the top has already passed, so
+  // every await on the way to the write has to re-check it.
+  {
+    const vault = makeVault({ "Calendar/tasks.ics": "BEGIN:VCALENDAR\r\nPRODID:-//Task Calendar Bridge//EN\r\nEND:VCALENDAR\r\n" });
+    let living = true;
+    const realRead = vault.port.read;
+    vault.port.read = async (p) => {
+      living = false;
+      return realRead(p);
+    };
+    const writer = new CalendarWriter(vault.port, makeExternal().port, { alive: () => living }, owned());
+    assert.deepEqual(await writer.writeToVault("Calendar/tasks.ics", "ICS", "sig"), { wrote: false });
+    assert.equal(vault.log.writes.length, 0, "no write after the instance died mid-export");
+  }
+  {
+    const vault = makeVault();
+    let living = true;
+    const realMkdir = vault.port.mkdir;
+    vault.port.mkdir = async (p) => {
+      living = false;
+      return realMkdir(p);
+    };
+    const writer = new CalendarWriter(vault.port, makeExternal().port, { alive: () => living }, owned());
+    assert.deepEqual(await writer.writeToVault("A/tasks.ics", "ICS", "sig"), { wrote: false });
+    assert.equal(vault.log.writes.length, 0, "no write after the instance died creating folders");
+  }
+
   // Ownership is recorded, so the guard above does not fire on our own file next time.
   {
     const vault = makeVault();
@@ -394,17 +421,65 @@ const settings = (over = {}) => ({
     const external = makeExternal();
     const writer = new CalendarWriter(makeVault().port, external.port, alive, owned());
     const target = { folder: "/cloud", fileName: "Calendar-tasks.ics" };
-    assert.equal(await writer.publish(target, "ICS-A", "sig-a"), "/cloud/Calendar-tasks.ics");
-    await writer.publish(target, "ICS-A", "sig-a");
+    assert.equal(await writer.publish(target, "ICS-A", "ICS-A"), "/cloud/Calendar-tasks.ics");
+    await writer.publish(target, "ICS-A", "ICS-A");
     assert.equal(external.log.writes.length, 1, "an identical published copy must not be rewritten");
 
     external.files.delete("/cloud/Calendar-tasks.ics");
-    await writer.publish(target, "ICS-A", "sig-a");
+    await writer.publish(target, "ICS-A", "ICS-A");
     assert.equal(external.log.writes.length, 2, "a deleted published copy must come back");
 
+    // Rewritten in place by something else — another desktop publishing the same vault to the
+    // same synced folder. Existing is not the same as holding this calendar.
+    external.files.set("/cloud/Calendar-tasks.ics", "an older calendar from another device");
+    await writer.publish(target, "ICS-A", "ICS-A");
+    assert.equal(external.log.writes.length, 3, "an overwritten published copy is repaired");
+    assert.equal(external.files.get("/cloud/Calendar-tasks.ics"), "ICS-A");
+
     // Changing the destination republishes rather than being mistaken for "already current".
-    await writer.publish({ folder: "/elsewhere", fileName: "Calendar-tasks.ics" }, "ICS-A", "sig-a");
-    assert.equal(external.log.writes.length, 3);
+    await writer.publish({ folder: "/elsewhere", fileName: "Calendar-tasks.ics" }, "ICS-A", "ICS-A");
+    assert.equal(external.log.writes.length, 4);
+  }
+
+  // A dead instance publishes nothing, even when it was alive at the start of the call.
+  {
+    const external = makeExternal();
+    let living = true;
+    external.port.read = async (p) => {
+      living = false;
+      return external.files.get(p);
+    };
+    const writer = new CalendarWriter(makeVault().port, external.port, { alive: () => living }, owned());
+    const target = { folder: "/cloud", fileName: "Calendar-tasks.ics" };
+    living = true;
+    await writer.publish(target, "ICS-A", "ICS-A");
+    external.files.set("/cloud/Calendar-tasks.ics", "changed elsewhere");
+    assert.equal(await writer.publish(target, "ICS-A", "ICS-A"), undefined);
+    assert.equal(external.log.writes.length, 1, "no publish after the instance died mid-export");
+  }
+
+  // The adapter's own filesystem steps (mkdir, temp write, rename) see the liveness check too, and
+  // an abandoned publish is not remembered as done.
+  {
+    const external = makeExternal();
+    let living = true;
+    let seenAlive;
+    const realWrite = external.port.write;
+    external.port.write = async (folder, fileName, contents, aliveNow) => {
+      seenAlive = aliveNow;
+      living = false; // disabled while "mkdir" was pending
+      if (!aliveNow()) return undefined;
+      return realWrite(folder, fileName, contents);
+    };
+    const writer = new CalendarWriter(makeVault().port, external.port, { alive: () => living }, owned());
+    const target = { folder: "/cloud", fileName: "Calendar-tasks.ics" };
+    assert.equal(await writer.publish(target, "ICS-A", "ICS-A"), undefined);
+    assert.equal(typeof seenAlive, "function", "the adapter is handed the liveness check");
+    assert.equal(external.log.writes.length, 0);
+    living = true;
+    external.port.write = realWrite;
+    await writer.publish(target, "ICS-A", "ICS-A");
+    assert.equal(external.log.writes.length, 1, "an abandoned publish is retried, not mistaken for done");
   }
 
   // Publishing without somewhere to publish to, and on a device that cannot.

@@ -23,6 +23,21 @@ export const CHANGELOG_URL = "https://github.com/israerusan/obsidian-task-calend
 /** Newest first. */
 export const RELEASE_NOTES: ReleaseNotes[] = [
   {
+    version: "1.3.1",
+    // A fixes-only patch: worth a changelog entry, not an interruption.
+    showOnUpdate: false,
+    highlights: [
+      {
+        title: "Publishing fixes",
+        body: "A published calendar overwritten by another device is now repaired on the next export, and a phone no longer reports a publishing failure for a setting switched on at your desktop.",
+      },
+      {
+        title: "Older timed events in a fixed time zone",
+        body: "One-off timed tasks from previous years are written as exact instants, so every calendar app shows them at the right time.",
+      },
+    ],
+  },
+  {
     version: "1.3.0",
     highlights: [
       {

@@ -42,7 +42,7 @@ import { SAMPLE_TASK_NOTE } from "./core/help";
 import { HelpModal } from "./HelpModal";
 import { ExportReportModal } from "./ExportReportModal";
 import { LicenseManager } from "./license/LicenseManager";
-import { isPublishSupported, publishCalendar, publishedFileExists } from "./publish";
+import { isPublishSupported, publishCalendar, readPublishedFile } from "./publish";
 import { TaskCalendarBridgeSettingTab } from "./settings/SettingsTab";
 import { PURCHASE_URL, type TaskCalendarBridgeSettings } from "./settings/schema";
 import { CALENDAR_VIEW_TYPE, TaskCalendarView, type CalendarViewHost, type FileState, type PreviewSnapshot } from "./view/CalendarView";
@@ -107,8 +107,8 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       },
       {
         available: () => isPublishSupported(),
-        exists: (fullPath) => publishedFileExists(fullPath),
-        write: (folder, fileName, contents) => publishCalendar(folder, fileName, contents),
+        read: (fullPath) => readPublishedFile(fullPath),
+        write: (folder, fileName, contents, alive) => publishCalendar(folder, fileName, contents, alive),
       },
       { alive: () => !this.unloaded },
       {
@@ -685,6 +685,11 @@ export default class TaskCalendarBridgePlugin extends Plugin {
   private async publishCalendarCopy(vaultPath: string, ics: string, signature: string): Promise<string | undefined> {
     if (this.unloaded) return undefined;
     if (!this.entitlements().publish) return undefined;
+    // The publish toggle lives in data.json, which syncs: switched on at a desktop, it arrives on
+    // a phone that has no filesystem to publish to — and whose settings tab cannot switch it off.
+    // Publishing there is the desktop's job, so this device simply does not, rather than
+    // reporting a "publishing failed" on every single export.
+    if (!isPublishSupported()) return undefined;
     return this.writer.publish({ folder: this.settings.publishPath, fileName: vaultPath.replace(/\//g, "-") }, ics, signature);
   }
 

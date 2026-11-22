@@ -636,6 +636,27 @@ const ics = (tasks, overrides = {}) => generateIcsCalendar(tasks, { ...ICS_OPTIO
   assert.ok(!recurring.includes("DTSTART:20260803T130000Z"), "and is never pinned to a UTC instant");
   assert.ok(recurring.includes("BEGIN:VTIMEZONE"));
 
+  // The VTIMEZONE's observances start in the year before the anchor year, so a one-off event
+  // older than that has no offset defined for its TZID. It is pinned to its exact UTC instant
+  // instead (Intl knows the historical offset). A repeating one keeps its TZID regardless —
+  // its future occurrences are what matter, and a UTC-pinned series drifts at every DST change.
+  const old = ics(
+    parse(
+      [
+        "- [ ] Old call [due:: 2024-07-04] [start:: 09:30]",
+        "- [ ] Old standup [due:: 2024-08-05] [start:: 09:00] [repeat:: every week on Monday]",
+        "- [ ] Call [due:: 2026-01-02] [start:: 09:30]",
+      ].join("\n"),
+      "o.md",
+      PRO
+    ).tasks,
+    { timeMode: "zoned", timeZone: "America/New_York" }
+  );
+  assert.ok(old.includes("DTSTART:20240704T133000Z"), "a one-off older than the zone's coverage is an exact UTC instant");
+  assert.ok(!old.includes("DTSTART;TZID=America/New_York:20240704T093000"));
+  assert.ok(old.includes("DTSTART;TZID=America/New_York:20240805T090000"), "an old repeating event stays bound to its zone");
+  assert.ok(old.includes("DTSTART;TZID=America/New_York:20260102T093000"), "an event inside the coverage keeps its TZID");
+
   // Local wall time means exactly that: no TZID, no VTIMEZONE, no zone hint.
   const floating = ics(parse("- [ ] Call [due:: 2026-07-04] [start:: 09:30]").tasks, { timeMode: "floating", timeZone: "America/New_York" });
   assert.ok(floating.includes("DTSTART:20260704T093000"));
