@@ -231,10 +231,13 @@ function resolveZone(tasks: CalendarTask[], options: IcsOptions, now: Date): Res
   // reach back to the oldest repeating timed task, or its first occurrences name
   // a zone with no observance in force. One-off events need no such reach — an
   // old one is written as an exact UTC instant instead.
+  // A year BEFORE the task's own: observances begin at their start year's first
+  // transition, so a series starting on 6 January would otherwise precede the
+  // first one by two months. Covering the whole year is what coversFrom promises.
   const year = now.getUTCFullYear();
   let earliestYear = year - 1;
   for (const task of tasks) {
-    if (task.startTime && task.recurrence) earliestYear = Math.min(earliestYear, Number(task.date.slice(0, 4)));
+    if (task.startTime && task.recurrence) earliestYear = Math.min(earliestYear, Number(task.date.slice(0, 4)) - 1);
   }
   const zone = buildZoneDefinition(options.timeZone, year, earliestYear);
   if (!zone) return undefined;

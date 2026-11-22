@@ -644,7 +644,7 @@ const ics = (tasks, overrides = {}) => generateIcsCalendar(tasks, { ...ICS_OPTIO
   const old = ics(
     parse(
       [
-        "- [ ] Old call [due:: 2024-07-04] [start:: 09:30]",
+        "- [ ] Old call [due:: 2022-07-04] [start:: 09:30]",
         "- [ ] Old standup [due:: 2024-08-05] [start:: 09:00] [repeat:: every week on Monday]",
         "- [ ] Call [due:: 2026-01-02] [start:: 09:30]",
       ].join("\n"),
@@ -653,10 +653,27 @@ const ics = (tasks, overrides = {}) => generateIcsCalendar(tasks, { ...ICS_OPTIO
     ).tasks,
     { timeMode: "zoned", timeZone: "America/New_York" }
   );
-  assert.ok(old.includes("DTSTART:20240704T133000Z"), "a one-off older than the zone's coverage is an exact UTC instant");
-  assert.ok(!old.includes("DTSTART;TZID=America/New_York:20240704T093000"));
+  assert.ok(old.includes("DTSTART:20220704T133000Z"), "a one-off older than the zone's coverage is an exact UTC instant");
+  assert.ok(!old.includes("DTSTART;TZID=America/New_York:20220704T093000"));
   assert.ok(old.includes("DTSTART;TZID=America/New_York:20240805T090000"), "an old repeating event stays bound to its zone");
-  assert.ok(old.includes("DTSTART:20240310T020000"), "and the VTIMEZONE reaches back to cover its first occurrence");
+  assert.ok(old.includes("DTSTART:20230312T020000"), "and the VTIMEZONE reaches back past its whole first year");
+
+  // A series starting in January precedes its own year's first DST change, so coverage has to
+  // start the year before.
+  const january = ics(parse("- [ ] Standup [due:: 2025-01-06] [start:: 09:00] [repeat:: every week on Monday]", "j.md", PRO).tasks, {
+    timeMode: "zoned",
+    timeZone: "America/New_York",
+  });
+  assert.ok(january.includes("DTSTART:20240310T020000"), "a January series is covered from the year before");
+  assert.ok(january.includes("DTSTART;TZID=America/New_York:20250106T090000"));
+
+  // A stable zone is covered however old the series: India has not changed its offset since 1945.
+  const kolkata = ics(parse("- [ ] Puja [due:: 1980-03-03] [start:: 07:00] [repeat:: every week on Monday]", "k.md", PRO).tasks, {
+    timeMode: "zoned",
+    timeZone: "Asia/Kolkata",
+  });
+  const kolkataStart = /BEGIN:STANDARD\r\nDTSTART:(\d{4})0101T000000/.exec(kolkata);
+  assert.ok(kolkataStart && Number(kolkataStart[1]) <= 1979, `a 1980 series in a stable zone is covered: ${kolkataStart?.[1]}`);
   assert.ok(old.includes("DTSTART;TZID=America/New_York:20260102T093000"), "an event inside the coverage keeps its TZID");
 
   // Local wall time means exactly that: no TZID, no VTIMEZONE, no zone hint.
@@ -760,6 +777,11 @@ const ics = (tasks, overrides = {}) => generateIcsCalendar(tasks, { ...ICS_OPTIO
     assert.ok(ruleChange.lines.includes("DTSTART:20070311T020000"), "starts at the 2007 rule change, not before");
     assert.equal(ruleChange.coversFrom, "2008-01-01");
     assert.deepEqual(buildZoneDefinition("America/New_York", 2026).lines, buildVtimezone("America/New_York", 2026), "the default reaches back one year");
+    // Same-shaped years under a different rule: the UK ended DST on the fourth Sunday of October
+    // until 1995. The oldest years are dropped one by one, not all of them at once.
+    const london = buildZoneDefinition("Europe/London", 2026, 1900);
+    assert.equal(london.coversFrom, "1997-01-01");
+    assert.ok(london.lines.includes("RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU"));
     assert.equal(buildZoneDefinition("America/New_York", 2026).coversFrom, "2026-01-01");
   }
 

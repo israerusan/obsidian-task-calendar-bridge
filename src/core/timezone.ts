@@ -148,8 +148,12 @@ function ruleFor(index: number, years: Transition[][]): string | undefined {
  * coincidence. A change the tz database already knows about inside the span fails the check too.
  */
 const FORWARD_YEARS = 10;
-/** How far back observances may start for an old repeating task. */
-const MAX_BACK_YEARS = 30;
+/**
+ * The earliest year observances may start. No fixed look-back: the walk back stops at the zone's
+ * last rule change anyway — which bounds the cost — and a stable zone (India since 1945) should
+ * cover a 1980 series. Before 1900 the tz database is local mean time and not worth describing.
+ */
+const MIN_YEAR = 1900;
 
 /** Memoised per zone and year: every export asks the same questions. */
 const YEAR_CACHE = new Map<string, Transition[] | undefined>();
@@ -194,7 +198,7 @@ export function buildVtimezone(timeZone: string, year: number): string[] | undef
  */
 export function buildZoneDefinition(timeZone: string, year: number, earliestYear: number = year - 1): ZoneDefinition | undefined {
   if (!timeZone) return undefined;
-  const floor = Math.max(Math.min(earliestYear, year - 1), year - 1 - MAX_BACK_YEARS);
+  const floor = Math.max(Math.min(earliestYear, year - 1), MIN_YEAR);
   // Probing a zone costs a few hundred Intl formatter calls per year on the main
   // thread; an export asks the same question every time it runs.
   const key = `${timeZone}|${year}|${floor}`;
@@ -255,13 +259,15 @@ function computeZoneDefinition(timeZone: string, year: number, floor: number): Z
     };
   }
 
-  // The rule has to reproduce every year from the start onward. Reaching back can stretch a
-  // window past seven days where the forward span alone fits one; then the old years are
-  // dropped rather than the zone.
+  // The rule has to reproduce every year from the start onward. Same-shaped years can still
+  // follow a different rule — the UK ended DST on the fourth Sunday of October until 1995, not
+  // the last — so the oldest years are dropped one at a time until a rule holds for all that
+  // remain. Only the walked-back years are ever dropped; the forward span decides the zone.
+  // No Intl calls here: every year's transitions are already cached.
   let rules = anchor.map((_, i) => ruleFor(i, years));
-  if (rules.some((rule) => rule === undefined) && start < year - 1) {
-    start = year - 1;
-    years = forward;
+  while (rules.some((rule) => rule === undefined) && start < year - 1) {
+    start++;
+    years = years.slice(1);
     rules = anchor.map((_, i) => ruleFor(i, years));
   }
   if (rules.some((rule) => rule === undefined)) return undefined;
