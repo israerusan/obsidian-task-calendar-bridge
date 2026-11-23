@@ -244,6 +244,11 @@ function computeZoneDefinition(timeZone: string, year: number, floor: number): Z
   if (anchor.length === 0) {
     const offset = zoneOffsetMinutes(Date.UTC(year, 0, 1), timeZone);
     if (offset === undefined) return undefined;
+    // Years are probed in UTC, but the observance starts at LOCAL midnight on 1 January, which
+    // east of UTC is hours earlier. Nepal moved from +05:30 to +05:45 at exactly local midnight
+    // on 1 January 1986 — inside that unprobed sliver — so a definition starting 19860101 claimed
+    // an offset that was not yet in force. Start only where the offset really held.
+    while (start < year && zoneOffsetMinutes(Date.UTC(start, 0, 1) - offset * MIN_MS, timeZone) !== offset) start++;
     return {
       lines: [
         "BEGIN:VTIMEZONE",

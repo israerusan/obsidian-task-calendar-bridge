@@ -33,7 +33,7 @@ export const RELEASE_NOTES: ReleaseNotes[] = [
       },
       {
         title: "Time-zone fixes",
-        body: "Correct daylight-saving dates for Israel, Chile and Greenland in fixed-time-zone mode, and older timed tasks now land at the right time in every calendar app.",
+        body: "Correct daylight-saving dates for Israel, Chile and Greenland in fixed-time-zone mode, and older timed tasks are now described precisely in the file, so calendar apps no longer have to guess their time.",
       },
     ],
   },

@@ -37,7 +37,8 @@ calendar you have already imported.
   syncs with the vault, so switching it on at a desktop made every export on a
   phone or tablet fail to publish — with the toggle disabled there, so it could
   not be switched off. Devices that cannot write outside the vault now leave
-  publishing to the desktop, silently.
+  publishing to the desktop, and keep showing the desktop's last publishing
+  result rather than erasing a failure it reported.
 - **Old one-off timed events in a fixed time zone.** The time-zone definition in
   the file only begins at last year's first daylight-saving change, so a timed
   task dated earlier named a zone with no rule in force for its date, and

@@ -507,6 +507,13 @@ export default class TaskCalendarBridgePlugin extends Plugin {
       const inert = this.describeInertPublish();
       if (inert) {
         publishError = inert;
+      } else if (this.entitlements().publish && !isPublishSupported()) {
+        // This device cannot publish (see publishCalendarCopy), so it knows nothing new about the
+        // published copy. Recording "no publish error" would erase a failure the desktop reported
+        // — and the record syncs back, so the desktop would show a clean feed that is still stale.
+        // Carry the last verdict forward until a device that can publish replaces it.
+        const previous = this.settings.lastExport;
+        if (previous && !previous.error && previous.path === check.path) publishError = previous.publishError;
       } else {
         // Tracked separately from the vault write. Deriving "does the published
         // copy need updating?" from "did the vault file change?" would skip the

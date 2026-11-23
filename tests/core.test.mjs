@@ -779,6 +779,11 @@ const ics = (tasks, overrides = {}) => generateIcsCalendar(tasks, { ...ICS_OPTIO
     assert.deepEqual(buildZoneDefinition("America/New_York", 2026).lines, buildVtimezone("America/New_York", 2026), "the default reaches back one year");
     // Same-shaped years under a different rule: the UK ended DST on the fourth Sunday of October
     // until 1995. The oldest years are dropped one by one, not all of them at once.
+    // Nepal moved from +05:30 to +05:45 at local midnight on 1 January 1986 — before UTC midnight,
+    // so a UTC-probed year missed it. The definition must not start on that boundary.
+    const kathmandu = buildZoneDefinition("Asia/Kathmandu", 2026, 1985);
+    assert.equal(kathmandu.coversFrom, "1987-01-01");
+    assert.ok(kathmandu.lines.includes("DTSTART:19870101T000000"), kathmandu.lines.join("\n"));
     const london = buildZoneDefinition("Europe/London", 2026, 1900);
     assert.equal(london.coversFrom, "1997-01-01");
     assert.ok(london.lines.includes("RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU"));
