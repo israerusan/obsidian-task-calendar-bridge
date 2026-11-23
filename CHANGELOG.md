@@ -22,6 +22,11 @@ calendar you have already imported.
   follows. Egypt (`Africa/Cairo`), whose autumn change can fall on 1 November,
   cannot be described by a single yearly rule at all and now uses the same safe
   fallback as other irregular zones (exact instants for one-off events).
+- **Vancouver (and any zone that stops changing its clocks).** British
+  Columbia moved to permanent daylight time in March 2026, which no yearly
+  daylight-saving rule can describe, so `America/Vancouver` fell back and
+  repeating events there were written as floating local times. A zone that has
+  settled is now described exactly, by its last actual changes.
 - **Old repeating timed tasks in a fixed time zone.** A repeating task that
   started before last year named a zone whose definition in the file began
   after its first occurrences. The definition now reaches back to the oldest

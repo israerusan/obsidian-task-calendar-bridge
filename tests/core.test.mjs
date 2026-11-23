@@ -784,6 +784,20 @@ const ics = (tasks, overrides = {}) => generateIcsCalendar(tasks, { ...ICS_OPTIO
     const kathmandu = buildZoneDefinition("Asia/Kathmandu", 2026, 1985);
     assert.equal(kathmandu.coversFrom, "1987-01-01");
     assert.ok(kathmandu.lines.includes("DTSTART:19870101T000000"), kathmandu.lines.join("\n"));
+    // British Columbia moved to permanent daylight time on 8 March 2026: one transition that year,
+    // none after. No yearly rule fits, but a settled zone is described exactly by its last
+    // changes as one-off observances — not dropped to floating times.
+    // Depends on the runtime's tz data: an older ICU still has Vancouver changing every year, and
+    // then the ordinary yearly rule applies instead.
+    const settled = formatZonedDateTimeAsUtc("2027-01-15", "12:00", "America/Vancouver") === "20270115T190000Z";
+    for (const year of settled ? [2026, 2027] : []) {
+      const vancouver = buildZoneDefinition("America/Vancouver", year);
+      assert.ok(vancouver, `a settled zone is still described in ${year}`);
+      assert.equal(vancouver.coversFrom, `${year}-01-01`);
+      const text = vancouver.lines.join("\n");
+      assert.ok(text.includes("BEGIN:DAYLIGHT\nDTSTART:20260308T020000\nTZOFFSETFROM:-0800\nTZOFFSETTO:-0700"), text);
+      assert.ok(!text.includes("RRULE"), "and nothing repeats after it settles");
+    }
     const london = buildZoneDefinition("Europe/London", 2026, 1900);
     assert.equal(london.coversFrom, "1997-01-01");
     assert.ok(london.lines.includes("RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU"));

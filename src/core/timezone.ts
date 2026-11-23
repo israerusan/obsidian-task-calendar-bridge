@@ -209,6 +209,55 @@ export function buildZoneDefinition(timeZone: string, year: number, earliestYear
 }
 
 function computeZoneDefinition(timeZone: string, year: number, floor: number): ZoneDefinition | undefined {
+  return yearlyZone(timeZone, year, floor) ?? settledZone(timeZone, year);
+}
+
+/**
+ * A zone that has stopped changing, described by its actual last transitions.
+ *
+ * British Columbia moved to permanent daylight time in 2026: one transition that year, none
+ * after. No yearly rule describes that — 2026 is not a DST pair and 2025 does not match 2027 —
+ * so it fell back, and every repeating Vancouver event was written as a floating time. But a
+ * zone that settles is the easiest one there is to describe exactly: each recent transition as
+ * a one-off observance (no RRULE), and the last one's offset simply holds from then on.
+ *
+ * Only for a zone that is settled well inside the verified span. One still changing near its end
+ * would have its last offset frozen forever, which is a guess, not the zone.
+ */
+function settledZone(timeZone: string, year: number): ZoneDefinition | undefined {
+  const changes: Transition[] = [];
+  let lastChangeYear = -1;
+  for (let y = year - 1; y <= year + FORWARD_YEARS; y++) {
+    const transitions = transitionsIn(timeZone, y);
+    if (transitions === undefined) return undefined;
+    if (transitions.length > 0) {
+      changes.push(...transitions);
+      lastChangeYear = y;
+    }
+  }
+  // At least five quiet years at the end of the span, and a handful of changes — a zone still
+  // flipping every year is the yearly-rule case, or irregular, not settled.
+  if (changes.length === 0 || changes.length > 8 || lastChangeYear > year + FORWARD_YEARS - 5) return undefined;
+
+  const lines = ["BEGIN:VTIMEZONE", `TZID:${timeZone}`];
+  // The offset in force from the start of last year until the first change.
+  const initial = changes[0].from;
+  lines.push("BEGIN:STANDARD", `DTSTART:${year - 1}0101T000000`, `TZOFFSETFROM:${offsetValue(initial)}`, `TZOFFSETTO:${offsetValue(initial)}`, "END:STANDARD");
+  for (const change of changes) {
+    const daylight = change.to > change.from;
+    lines.push(daylight ? "BEGIN:DAYLIGHT" : "BEGIN:STANDARD");
+    lines.push(`DTSTART:${localStamp(change.at, change.from)}`);
+    lines.push(`TZOFFSETFROM:${offsetValue(change.from)}`);
+    lines.push(`TZOFFSETTO:${offsetValue(change.to)}`);
+    lines.push(daylight ? "END:DAYLIGHT" : "END:STANDARD");
+  }
+  lines.push("END:VTIMEZONE");
+  // From 1 January of the anchor year: last year's local new year can fall in the hours before
+  // UTC midnight that were never probed.
+  return { lines, coversFrom: `${year}-01-01` };
+}
+
+function yearlyZone(timeZone: string, year: number, floor: number): ZoneDefinition | undefined {
   const anchor = transitionsIn(timeZone, year);
   if (anchor === undefined) return undefined;
   // Exactly a DST pair, or no change at all. Anything else is an irregular year

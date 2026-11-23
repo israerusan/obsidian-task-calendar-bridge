@@ -513,7 +513,9 @@ export default class TaskCalendarBridgePlugin extends Plugin {
         // — and the record syncs back, so the desktop would show a clean feed that is still stale.
         // Carry the last verdict forward until a device that can publish replaces it.
         const previous = this.settings.lastExport;
-        if (previous && !previous.error && previous.path === check.path) publishError = previous.publishError;
+        // isSameFile, not ===: the vault folds case and Unicode form, so `calendar/tasks.ics` typed on
+        // the phone is the desktop's `Calendar/tasks.ics`, and its failure must survive.
+        if (previous && !previous.error && isSameFile(previous.path, check.path)) publishError = previous.publishError;
       } else {
         // Tracked separately from the vault write. Deriving "does the published
         // copy need updating?" from "did the vault file change?" would skip the
